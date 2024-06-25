@@ -5,9 +5,11 @@ using Revise
 # expose other modules to package
 include("Controller.jl")
 include("Utilities.jl")
+include("SyntheticData.jl")
 
 using .Controller
 using .Utilities
+using .SyntheticData
 
 # TODO: Define grid structure
 # struct Grid

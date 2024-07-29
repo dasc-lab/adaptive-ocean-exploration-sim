@@ -298,6 +298,7 @@ function controller_single_integrator(grid, p, traj, M; umax=1.0, do_boundary_co
     
     # println("M: $(M)")
     b_ergo = ergodic_descent_direction(grid, p, traj, M)
+    # println("b_ergo: $(b_ergo)")
     u_ergo = - umax * normalize(b_ergo)
     if do_boundary_correction
         # return boundary_correction_discrete_time(grid, p, u_ergo; ΔT)

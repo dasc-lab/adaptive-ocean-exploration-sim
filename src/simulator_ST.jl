@@ -2,7 +2,7 @@ module SimulatorST
 
 using LinearAlgebra, StaticArrays, Interpolations
 using ProgressLogging
-using ..SyntheticData, ..NGPKF, ..ErgodicController
+using ..SyntheticData, ..NGPKF, ..ErgodicController, ..KF
 
 
 # MATERN SPATIAL LENGTH SCALE = 1.0 km
@@ -367,9 +367,6 @@ function simulate(ts, x0::XS, controllers;
       #   last_control_update_time = t
 
       # end
-
-
-
       # update 
       u = us[end] # use the last control input
       new_xs = step(t, xs[end], u, ΔT)

@@ -42,8 +42,7 @@ function compute_lcbf()
         Ps[i] = max(0, SolarInsolation(dayOfYear, t[i], lat))*1000* boat.panel_area * boat.panel_efficiency;
         ϵ₋[i] = boat.k_h*(og_time[i] - og_time[1]) - sum(Ps[1:i]*Δt);
     end
-    
-    
+
     lcbf = zeros(n);
     
     for i = 1:n
@@ -102,16 +101,10 @@ function zeropower!(boat, dayOfYear, time, lat, soc, dt)
 end
 
 
-
-
-function generate_SOC_target(lcbf, ucbf)
+function generate_SOC_target(lcbf, ucbf, soc_begin, soc_target)
     # Learning gains
     k_p = -5e-5; # Learning P gain (-1e-5)
     k_d = -1e-5; # Learning D gain 5e-5 -1e-5
-
-
-    # Terminal SOC Target
-    soc_target = 1000; #Wh
 
 
     xmax = 0; # best distance travel
@@ -129,7 +122,7 @@ function generate_SOC_target(lcbf, ucbf)
     lcbf_dot = diff(lcbf); # Derivative of lcbf
 
     x = zeros(n);
-    b = ones(n)*b_0;
+    b = ones(n)*soc_begin;
     v = ones(n)*boat.v_max;
     old_b = zeros(n);
 
@@ -145,7 +138,7 @@ function generate_SOC_target(lcbf, ucbf)
             i = j-1;
             if i == 1 # initial conditions
                 x[i] = 0;
-                b[i] = b_0;
+                b[i] = soc_begin;
             end
 
             p2_list[i] = p2;
@@ -208,14 +201,12 @@ function generate_SOC_target(lcbf, ucbf)
 end
 
 
-
-
 function generate_vel_profile(lcbf, ucbf, b)
     # Store the target profile
-    # Store the target profile
     soc_profile = b;
-    soc_kp = 0.01;
-    soc_kd = 0;
+    soc_kp = 0.01; 
+    soc_ki = 0.0001;
+    soc_kd = 0.001;
 
     # Create variables to store the ASV's state in this simulation
     b_sim = ones(n)*b_0;
@@ -229,22 +220,21 @@ function generate_vel_profile(lcbf, ucbf, b)
             b_sim[i] = b_0;
         end
 
-        # Compute error between current soc and target soc
         e_sim[i] = b_sim[i] - soc_profile[i];
 
         # Compute unconstrained velocity and SOC
-        v_sim[i] += soc_kp * e_sim[i] + soc_kd * diff(e_sim)[i]; # removed negative sign from numerator to let p be positive
-        b_dot = powermodel!(boat, dayOfYear, t[i], lat, v_sim[i], b_sim[i], Δt);
-
+        global v_sim[i] = soc_kp * e_sim[i] + soc_ki * sum(e_sim) + soc_kd * diff(e_sim)[i];
+        global v_sim[i] = max(0, min(v_sim[i], boat.v_max));
+        
         # Impose Boundary Conditions
         if b_sim[i] <= lcbf[i]
-            v_sim[i] = 0;
+            global v_sim[i] = 0;
         elseif 0 < (b_sim[i] - lcbf[i]) < δ
-            v_sim[i] = (b_sim[i] - lcbf[i])/δ * v_sim[i] + (1 - (b_sim[i] - lcbf[i])/δ) * boat.v_min;
+            global v_sim[i] = (b_sim[i] - lcbf[i])/δ * v_sim[i] + (1 - (b_sim[i] - lcbf[i])/δ) * boat.v_min;
         elseif b_sim[i] >= ucbf[i]
-            v_sim[i] = boat.v_max;
+            global v_sim[i] = boat.v_max;
         elseif 0 < (ucbf[i] - b_sim[i]) < δ
-            v_sim[i] = (ucbf[i] - b_sim[i])/δ * v_sim[i] + (1 - (ucbf[i] - b_sim[i])/δ) * boat.v_max;
+            global v_sim[i] = (ucbf[i] - b_sim[i])/δ * v_sim[i] + (1 - (ucbf[i] - b_sim[i])/δ) * boat.v_max;
         end
 
         # Move boat
@@ -264,7 +254,6 @@ function generate_vel_profile()
     v = generate_vel_profile(lcbf, ucbf, b)
     return lcbf, ucbf, b, v
 end
-
 
 
 end

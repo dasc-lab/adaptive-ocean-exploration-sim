@@ -22,12 +22,12 @@ boat = ASV_Params();
 # Environment Parameters
 dayOfYear = 288; # corresponds to October 15th
 lat = 35.45; # degrees - corresponds to Jordan Lake
-Δt = 0.1; # time step in hours
-t = 10:Δt:13;
-og_time = t;
+# Δt = 0.1; # time step in hours
+# t = 10:Δt:13;
+# og_time = t;
 # t = t .+ 12;
 # t = t .% 24; # time over a day from noon to noon
-n = length(t);
+# n = length(t);
 
 # Initial Conditions
 b_0 = boat.b_max;
@@ -35,7 +35,9 @@ b_0 = boat.b_max;
 # Compute the lower Barrier
 
 # ============================================================
-function compute_lcbf()
+function compute_lcbf(t, Δt)
+    n = length(t);
+    og_time = t;
     ϵ₋ = zeros(n); # energy deficit
     Ps = zeros(n);
     for i = 1:n
@@ -53,7 +55,9 @@ function compute_lcbf()
     return lcbf
 end
 
-function compute_ucbf()
+function compute_ucbf(t, Δt)
+    n = length(t);
+    og_time = t;
     ϵ₊ = zeros(n); # energy surplus
     Ps = zeros(n);
     for i = 1:n
@@ -101,7 +105,9 @@ function zeropower!(boat, dayOfYear, time, lat, soc, dt)
 end
 
 
-function generate_SOC_target(lcbf, ucbf, soc_begin, soc_target)
+function generate_SOC_target(lcbf, ucbf, soc_begin, soc_target, t, Δt)
+    n = length(t);
+
     # Learning gains
     k_p = -5e-5; # Learning P gain (-1e-5)
     k_d = -1e-5; # Learning D gain 5e-5 -1e-5
@@ -116,7 +122,6 @@ function generate_SOC_target(lcbf, ucbf, soc_begin, soc_target)
     error_rate = zeros(num_iters);
     p_list[1] = 0.5; # Initial guess for p2
     p2min = 1/(3*boat.k_m*(boat.v_max^2));
-    println("p2min: ", p2min);
 
     δ = 150; # 50Wh barrier on lcbf
     lcbf_dot = diff(lcbf); # Derivative of lcbf
@@ -201,7 +206,9 @@ function generate_SOC_target(lcbf, ucbf, soc_begin, soc_target)
 end
 
 
-function generate_vel_profile(lcbf, ucbf, b)
+function generate_vel_profile(lcbf, ucbf, b, t, Δt)
+    n = length(t);
+
     # Store the target profile
     soc_profile = b;
     soc_kp = 0.01; 
@@ -245,14 +252,31 @@ function generate_vel_profile(lcbf, ucbf, b)
     return v_sim
 end
 
-function generate_vel_profile()
-    lcbf = compute_lcbf() 
-    ucbf = compute_ucbf()
+function generate_vel_profile(t, Δt, soc_begin, soc_target)
+    lcbf = compute_lcbf(t, Δt) 
+    ucbf = compute_ucbf(t, Δt)
     # println("computed ucbf")
-    b = compute_SoC_target(lcbf, ucbf)
+    b = generate_SOC_target(lcbf, ucbf, soc_begin, soc_target, t, Δt)
     # println("computed b")
     v = generate_vel_profile(lcbf, ucbf, b)
     return lcbf, ucbf, b, v
+end
+
+
+# Target SOC based PID speed controller
+function speed_controller(current_soc, target_soc, error)
+    # PID Gains
+    kp = 0.005; 
+    ki = 0.001;
+    kd = 0.001;
+
+    # PID
+    push!(error, current_soc - target_soc);
+    difference = error[end] - error[end-1];
+    speed = kp*error[end] + ki*sum(error) + kd*difference;
+    speed = max(0, min(speed, boat.v_max));
+
+    return speed, error
 end
 
 

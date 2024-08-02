@@ -807,8 +807,6 @@ function simulate_spatial_w_speed(ts, x0::XS, b0, controllers, soc_profile;
   # Compute velocity for first step
   error = zeros(1);
   speed, error = SoCController.speed_controller(b0 ,soc_profile[1], error)
-  println("Speed: ", speed)
-  println("error: ", error)
 
   # decide the control input for the first step
   u0 = controllers(t0, x0;
@@ -816,7 +814,7 @@ function simulate_spatial_w_speed(ts, x0::XS, b0, controllers, soc_profile;
     ergo_grid=ergo_grid,
     ergo_q_map=ergo_q_maps[end],
     traj=vcat(xs...),
-    umax = 2.0,
+    umax = speed,
     ΔT=ΔT,
   )
   us = [u0,]

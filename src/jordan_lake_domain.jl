@@ -5,26 +5,17 @@ export polygon # Boundary of region of interest in Jordan lake
 using LazySets
 # using Plots
 
-const DIST_BT_LOCS = 0.2 # Horizontal/vertical distance between locations [km]
-# Note: `DIST_BT_LOCS = 0.2` produces a `length(𝐬)` of 167
+const DIST_BT_LOCS = 0.15 # Horizontal/vertical distance between locations [km]
+# Note: `DIST_BT_LOCS = 0.2` produces a `length(𝐬)` of 114
+#       `DIST_BT_LOCS = 0.15` produces a `length(𝐬)` of 203
+#       `DIST_BT_LOCS = 0.1` produces a `length(𝐬)` of 458
 
 const polygon = Polygon([[0, 0],
-    [2.1314, 0.9141],
-    [1.8282, 1.2219],
-    [0.9141, 0.9141],
-    [0.6063, 1.5251],
-    [0.9094, 3.0408],
-    [0.9188, 3.3579],
-    [1.21725, 3.9642],
-    [0.9141, 4.2720],
-    [1.2173, 5.4893],
-    [1.8282, 6.1002],
-    [1.5204, 6.4034],
-    [0.9048, 6.5013],
-    [0.9141, 5.4893],
-    [-0.2332, 3.8710],
-    [-0.3078, 2.7423],
-    [-0.6063, 2.1360],
+    [0.3362, 0],
+    [0.7925, 4.3707],
+    [0.9366, 6.3399],
+    [-0.1441, 4.7069],
+    [-0.3602, 1.3929],
 ])
 𝐬 = Vector{Vector{Float64}}() # points of polygon
 

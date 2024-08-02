@@ -4,7 +4,7 @@ plotlyjs()
 include("src/jordan_lake_domain.jl")
 
 plot_object = plot(JordanLakeDomain.polygon, aspect_ratio=:equal)
-plot_object = xlims!(plot_object, -1, 2.5)
+plot_object = xlims!(plot_object, -1, 1)
 location_index = 1
 for p in JordanLakeDomain.𝐬
     plot_object = scatter!(plot_object, [p[1]], [p[2]],

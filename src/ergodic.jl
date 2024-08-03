@@ -3,6 +3,11 @@ module ErgodicController
 using FFTW, LinearAlgebra, StaticArrays
 using RecipesBase
 
+include("Convex_bound_avoidance.jl")
+
+using .ConvexBoundAvoidance
+
+
 struct Grid{T, F}
     o::T # origin of the grid
     dx::T # spacing of each cell 
@@ -207,6 +212,30 @@ function ergodic_descent_direction(grid, p, ck_minus_Mk)
     return @SVector [bx, by]
 end
 
+
+
+function convex_bounary_correction(convex_polygon, p, u; speed_max = 1.8, min_safe_d = 1.0)
+
+    # Compute the closest point on the boundary of the convex shape to the robot pos p
+    distance, closest_point = ConvexBoundAvoidance.minimum_distance_to_boundary(convex_polygon, p)
+
+    # Compute a normal unit vector pointing towards the centroid of the convex shape 
+    normal_vector = ConvexBoundAvoidance.normal_vector_to_centroid(convex_polygon, closest_point)
+
+    # Compute the force field 
+    uff = normal_vector * speed_max
+    # Compute the adjusted velocity vector
+    u_cmd = min(1, (distance/min_safe_d)) * u + max(0, (1 - (distance/min_safe_d)))*uff
+    
+    # debugging
+    # println("u_ergo: $(u)")
+    # println("speed: $(speed)")
+    # pritnln("field force input: $(uff)")
+    # pritnln("commanded velocity: $(u_cmd)")
+    return u_cmd
+end
+
+
 function boundary_correction(grid, p, u; α=1)
 
     # decompose the control input
@@ -246,7 +275,7 @@ function boundary_correction(grid, p, u; α=1)
     ux = clamp(u1, ux_min, ux_max)
     uy = clamp(u2, uy_min, uy_max)
     
-
+    
 
     return @SVector [ux, uy]
 end
@@ -290,6 +319,22 @@ function boundary_correction_discrete_time(grid, p, u; γ=0.5, ΔT)
     uy = clamp(u2, uy_min, uy_max)
     
     return @SVector [ux, uy]
+end
+
+
+function controller_single_integrator_cvx_bound(grid, p, traj, M, convex_polygon; umax=1.0, do_boundary_correction=true)
+    
+    # println("M: $(M)")
+    b_ergo = ergodic_descent_direction(grid, p, traj, M)
+    # println("b_ergo: $(b_ergo)")
+    u_ergo = - umax * normalize(b_ergo)
+    if do_boundary_correction
+        # return boundary_correction_discrete_time(grid, p, u_ergo; ΔT)
+        return convex_bounary_correction(convex_polygon, p, u_ergo; speed_max = umax)
+    else
+        return u_ergo
+    end
+     
 end
 
 

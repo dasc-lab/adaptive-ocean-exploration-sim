@@ -118,7 +118,7 @@ function correct(mygrid::G, s::S, ps, ys; σ_meas=0, R_measure = σ_meas^2 * I(l
 
   # calculate matrices
   Ct = K_fy_f_t_t  *  iK_f_f_t_t
-  Rt  = Hermitian( K_fy_fy_t_t - Ct * K_f_fy_t_t  + R_measure )
+  Rt  = Hermitian(K_fy_fy_t_t - Ct * K_f_fy_t_t  + R_measure)
 
   # return the KF correction
   s_new = KF.correct(s, ys, Ct, Rt)
@@ -196,7 +196,6 @@ function clarity_map(g::G, w::S) where {G <: NGPKFGrid, S <: KF.KFState}
     end
   
     return reshape(q, Nx, Ny)
-  
   end
 
 

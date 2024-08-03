@@ -404,6 +404,7 @@ function simulate_weighted_exp_spatial(ts, x0::XS, controllers, w_rated_val;
 
         M = reshape(KF.μ(w_hats[end]), Nx, Ny)
 
+        
         u, q_target = controllers(t, x, M, w_rated_val;
           ngpkf_grid=ngpkf_grid,
           ergo_grid=ergo_grid,
@@ -597,6 +598,148 @@ function simulate_weighted_spatial(ts, x0::XS, controllers;
 end
 
 # Simulate Spatiotemporal 
+
+
+
+function simulate_spatial_cvx_bound(ts, x0::XS, controllers, convex_polygon;
+  ngpkf_grid::G,
+  EnvDataSpatial,
+  σ_meas=0, 
+  σ_process=0,
+  Q_process = σ_process^2 * I,
+  fuse_measurements_every_ΔT=5.0,
+  recompute_controller_every_ΔT=fuse_measurements_every_ΔT) where {X<:SVector,XS<:AbstractVector{X},G<:NGPKF.NGPKFGrid}
+
+  
+  # extract info from arguments
+  t0 = ts[1]
+  xs = [x0,]
+  N_robots = length(x0)
+  ΔT = Base.step(ts)
+
+  Ns_grid = length(ngpkf_grid.xs), length(ngpkf_grid.ys) # The grid of size (64, 32)
+  ergo_grid = ErgoGrid(ngpkf_grid, (256, 256))
+
+  # setup map states
+  w_hat_ts = [t0,]
+
+  w_hat = NGPKF.initialize(ngpkf_grid)
+  w_hats = [w_hat,]
+
+  # check the covariances
+  # print(NGPKF.KF.Σ(w_hat))
+  # @assert false
+
+  # clarity map
+  q_map = NGPKF.clarity_map(ngpkf_grid, w_hat)
+  ergo_q_map = ngpkf_to_ergo(ngpkf_grid, ergo_grid, q_map)
+  ergo_q_maps = [ergo_q_map,]
+
+  # get a measurement
+  # ys = [measure(t0, x0[i], EnvDataSpatial; σ_meas=σ_meas) for i = 1:N_robots]
+  measurements = [measure(t0, x0, EnvDataSpatial; σ_meas = σ_meas)...]  
+
+  # decide the control input for the first step
+  u0 = controllers(t0, x0, convex_polygon;
+    ngpkf_grid=ngpkf_grid,
+    ergo_grid=ergo_grid,
+    ergo_q_map=ergo_q_maps[end],
+    traj=vcat(xs...),
+    ΔT=ΔT,
+  )
+  us = [u0,]
+
+  last_measurement_fuse_time = t0
+  last_measurement_fuse_index = 0
+
+  last_control_update_time = t0
+  # try
+    @progress for (it, t) in enumerate(ts[1:(end-1)])
+      
+      x = xs[end]
+
+      # make a measurement from each robot
+      ys = measure(t, x, EnvDataSpatial; σ_meas=σ_meas)
+      append!(measurements, ys)
+      # check if we need to fuse measurements
+      if (t - last_measurement_fuse_time) >= fuse_measurements_every_ΔT
+
+        # # collect all the locations we have made measurements
+        # measurement_pos = vcat(xs[last_measurement_fuse_index:end]...)
+        # measurement_w = vcat(measurements[last_measurement_fuse_index:end]...)
+
+        # # extract x and y components of the measurements
+        # measurements_wx = [w[1] for w in measurement_w]
+        # measurements_wy = [w[2] for w in measurement_w]
+
+        # run NGPKF
+        w_hat = NGPKF.predict(ngpkf_grid, w_hats[end]; Q_process=Q_process)
+
+        # grab the data again
+        new_measurements = measurements[(last_measurement_fuse_index+1):end]
+        measurement_pos = [m.p for m in new_measurements]
+        measurements_w = [m.y for m in new_measurements]
+
+        # run the fusion
+        w_hat_new = NGPKF.correct(ngpkf_grid, w_hat, measurement_pos, measurements_w; σ_meas=σ_meas)
+        
+        # save the new maps
+        push!(w_hat_ts, t)
+        push!(w_hats, w_hat_new)
+
+        # update the clarity map
+        q_map = NGPKF.clarity_map(ngpkf_grid, w_hat_new)
+        ergo_q_map = ngpkf_to_ergo(ngpkf_grid, ergo_grid, q_map)
+        push!(ergo_q_maps, ergo_q_map)
+
+        last_measurement_fuse_time = t
+        last_measurement_fuse_index = length(measurements)
+      end
+
+
+      # if (t - last_control_update_time >= recompute_controller_every_ΔT)
+      #   # chose a control action
+
+        traj = vcat(xs...)
+
+        u = controllers(t, x, convex_polygon;
+          ngpkf_grid=ngpkf_grid,
+          ergo_grid=ergo_grid,
+          ergo_q_map=ergo_q_maps[end], # current clarity
+          traj=traj,  # list of all points visited by all agents
+          ΔT=ΔT,
+        )
+        
+        # Debug 01
+        # if isnan(x[1])
+        #   println("current state: $(x)")
+        # end
+
+
+        push!(us, u)
+
+      #   last_control_update_time = t
+
+      # end
+
+      # update 
+      u = us[end] # use the last control input
+      new_xs = step(t, xs[end], u, ΔT)
+
+      # if isnan(new_xs[1])
+      #   println("New state: $(new_xs)")
+      # end
+      push!(xs, new_xs)
+
+    end
+
+  # catch e
+    # println(e)
+  # end
+
+  return SimResult(ts, xs, us, measurements, w_hat_ts, w_hats, ergo_q_maps)
+
+end
 
 
 function simulate_SoC_spatial(ts, x0::XS, controllers, speed_profile;

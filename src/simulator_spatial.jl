@@ -819,7 +819,7 @@ function simulate_spatial_w_speed(ts, x0::XS, b0, controllers, soc_profile;
   )
   us = [u0,]
 
-  push!(bs, SoCController.batterymodel!(boat, dayOfYear, t0/60, lat, speed, b0, ΔT/60))
+  push!(bs, SoCController.batterymodel!(boat, dayOfYear, t0/60, lat, norm(u0), b0, ΔT/60))
 
   last_measurement_fuse_time = t0
   last_measurement_fuse_index = 0
@@ -827,7 +827,7 @@ function simulate_spatial_w_speed(ts, x0::XS, b0, controllers, soc_profile;
   last_control_update_time = t0
   # try
     @progress for (it, t) in enumerate(ts[1:(end-1)])
-      
+     
       x = xs[end]
       b = bs[end]
 
@@ -907,7 +907,7 @@ function simulate_spatial_w_speed(ts, x0::XS, b0, controllers, soc_profile;
       #   println("New state: $(new_xs)")
       # end
       push!(xs, new_xs)
-      push!(bs, SoCController.batterymodel!(boat, dayOfYear, t/60, lat, speed, bs[end], ΔT/60))
+      push!(bs, SoCController.batterymodel!(boat, dayOfYear, t/60, lat, norm(u), b, ΔT/60))
 
     end
 

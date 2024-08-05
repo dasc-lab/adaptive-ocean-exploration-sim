@@ -29,9 +29,6 @@ lat = 35.45; # degrees - corresponds to Jordan Lake
 # t = t .% 24; # time over a day from noon to noon
 # n = length(t);
 
-# Initial Conditions
-b_0 = boat.b_max;
-
 # Compute the lower Barrier
 
 # ============================================================
@@ -134,7 +131,7 @@ function generate_SOC_target(lcbf, ucbf, soc_begin, soc_target, t, Δt)
     for day = 1:1:num_iters
         # println("xmax:$(xmax)")
         x = zeros(n);
-        b = ones(n)*b_0;
+        b = ones(n)*soc_begin;
         v = ones(n)*boat.v_max;
 
         p2 = p_list[day];
@@ -216,7 +213,7 @@ function generate_vel_profile(lcbf, ucbf, b, t, Δt)
     soc_kd = 0.001;
 
     # Create variables to store the ASV's state in this simulation
-    b_sim = ones(n)*b_0;
+    b_sim = ones(n);
     v_sim = ones(n)*boat.v_max;
     e_sim = zeros(n); # error profile
     δ = 150; # 50Wh barrier on lcbf
@@ -224,7 +221,7 @@ function generate_vel_profile(lcbf, ucbf, b, t, Δt)
     for j in 2:n
         i = j-1;
         if i == 1 # initial conditions
-            b_sim[i] = b_0;
+            b_sim[i] = 1;
         end
 
         e_sim[i] = b_sim[i] - soc_profile[i];
@@ -266,9 +263,9 @@ end
 # Target SOC based PID speed controller
 function speed_controller(current_soc, target_soc, error)
     # PID Gains
-    kp = 0.005; 
-    ki = 0.001;
-    kd = 0.001;
+    kp = 0.5; 
+    ki = 0.01;
+    kd = 0.5;
 
     # PID
     push!(error, current_soc - target_soc);

@@ -2,77 +2,126 @@ module Variograms
 
 using LinearAlgebra, LsqFit, StatsBase
 
-function empirical_variogram(pos, v, drange; N=1000)
+# Function to calculate pairwise distances
+function pairwise_distances(measurements)
+    n = length(measurements)
+    h = zeros(n, n)  # Spatial distances
+    γ = zeros(n, n)  # Semi-variogram
 
-    size(pos, 1) == length(v) || throw(DimensionMismatch())
-    # expects pos to be NxM matrix, where M is the dimension of the "pos" variable
-    # expects v to be N vector
-
-    N_data = size(pos, 1)
-    if N_data <= N
-        inds = 1:N_data
-    else
-        inds = rand(1:N_data, N)
+    for i in 1:n
+        for j in 1:n
+            h[i, j] = sqrt((measurements[i].x - measurements[j].x)^2 + (measurements[i].y - measurements[j].y)^2)
+            γ[i, j] = 0.5 * (measurements[i].vel - measurements[j].vel)^2
+        end
     end
+    return h, γ
+end
 
-    pos_ = pos[inds, :]
-    v_ = v[inds]
-
-    L = length(v_)
-    D = length(drange)
-    counts = zeros(D)
-    vs = zeros(D)
-
-    for i=1:L, j=i:L
-        d = norm(pos_[i, :] - pos_[j, :])
-        
-        if d <= 1.1*drange[end]
-            
-            ind = searchsortedlast(drange, d)
-            
-            counts[ind] += 1
-            vs[ind] += (v_[i] - v_[j])^2
-            
+# Function to calculate the empirical variogram
+function empirical_variogram(h, γ, n_bins=50)
+    # h_max = maximum(h)
+    h_max = 30
+    h_edges = range(0, h_max, length=n_bins+1)
+    
+    bins = DataFrame(h_mid = Float64[], variogram = Float64[], count = Int64[])
+    
+    for i in 1:n_bins
+        h_bin = h_edges[i] .<= h .< h_edges[i+1]
+        bin_count = count(h_bin)
+        if bin_count > 0
+            h_mid = (h_edges[i] + h_edges[i+1]) / 2
+            variogram_value = mean(γ[h_bin])
+            push!(bins, (h_mid, variogram_value, bin_count))
+            # push the data all together at the end rather than on each loop
         end
     end
 
-    return vs ./ (2 * counts), counts
+    return bins
 end
 
-
-function variogram_SE(x, p)
-    σ, l = p
-    return σ * (1 .- exp.( - 1/2 * (x/l).^2 ) )
+function covariance(x1, x2, λₓ, σ)
+    return (σ^2) .* exp(-norm.(x1.-x2)/λₓ);
 end
 
-function variogram_Matern_12(x, p)
-    σ, l = p
-    return σ * (1 .- exp.( - (x/l) ) )
+function matern12_variogram(h, σ_sq, λₓ)
+    return σ_sq .* (1 .- exp.(-h./λₓ))
 end
 
-function fit_variogram_SE(ds, γs, p0 = [1.0, 1.0])
-    fit = curve_fit(variogram_SE, ds, γs, p0)
-    return fit.param
+function matern12_variogram(h, p)
+    return p[1] .* (1 .- exp.(-h./p[2]))
 end
 
-function fit_variogram_Matern_12(ds, γs, p0 = [1.0, 1.0])
-    fit = curve_fit(variogram_Matern_12, ds, γs, p0)
-    return fit.param
+function matern12_log(h, σ_sq, λₓ)
+    return log(σ_sq).-(h./λₓ)
+    # return -(1/λₓ).*h
 end
 
+function matern12_lin(h, σ_sq, λₓ)
+    return -1/λₓ
+end
 
-function estimate_σt(ts, ws)
+# Recursive least squares fitting for the log variogram provided variance
+function rls_weight(emp_vario, initial_params, λ)
+    n = length(emp_vario.h_mid)
+    params = initial_params
 
-    vs = Float64[]
-    for i=1:(length(ts)-1), j=(i+1):length(ts)
+    half_n = Int(floor(n/2));
 
-        dt = ts[j]-ts[i]
-        dw = ws[j] - ws[i]
+    # RLS udpate of λₓ (Only base this off of first half of bins)
+    P = 2
+    for i in 1:half_n
+        h_i = emp_vario.h_mid[i]
+        γ_i = log.(sign.(emp_vario.variogram[i] - params[1]) .* (emp_vario.variogram[i] - params[1]))
 
-        push!(vs, dw / sqrt(dt))
+        # Jacobian
+        # phi_i = [matern32_variogram(h_i, 1, params[2]) / params[1],   # Derivative wrt σ²
+        #          matern32_variogram(h_i, params[1], 1) / params[2]]   # Derivative wrt ℓ
+
+        phi_i = h_i/(params[2]^2)
+
+        # Prediction error
+        # γ_hat_i = matern12_variogram(h_i, params[1], params[2])
+        γ_hat_i = matern12_log(h_i, params[1], params[2])
+        e_i = γ_i - γ_hat_i
+
+        # Kalman gain
+        K = P * phi_i / (λ + phi_i * P * phi_i)
+
+        # Update parameters
+        params[2] = max(0.01, params[2] + K * e_i)
+
+        # Update covariance matrix
+        P = (I - K * phi_i') * P / λ
     end
 
-    return std(vs)
+    # RLS update of σ_sq (weight towards last half of bins)
+    P = 2
+    for i in 1:n
+        h_i = emp_vario.h_mid[i]
+        γ_i = emp_vario.variogram[i]
+
+        # Jacobian
+        # phi_i = [matern32_variogram(h_i, 1, params[2]) / params[1],   # Derivative wrt σ²
+        #          matern32_variogram(h_i, params[1], 1) / params[2]]   # Derivative wrt ℓ
+
+        phi_i = 1 - exp(-h_i/params[2])
+
+        # Prediction error
+        γ_hat_i = matern12_variogram(h_i, params[1], params[2])
+        e_i = γ_i - γ_hat_i
+
+        # Kalman gain
+        K = P * phi_i / (λ + phi_i * P * phi_i)
+
+        # Update parameters
+        params[1] = max(0.01, params[1] + K * e_i)
+
+        # Update covariance matrix
+        P = (I - K * phi_i') * P / λ
+    end
+    
+
+    return params
 end
 
 end

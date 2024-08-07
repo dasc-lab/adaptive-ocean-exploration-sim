@@ -3,20 +3,22 @@ module ConvexBoundAvoidance
 ## Kaleb Ben Naveed August 2024
 
 using Plots, StaticArrays, LinearAlgebra, Statistics
+using LazySets
 
 export ConvexPolygon
 
 struct ConvexPolygon
+    polygon::VPolygon{Float64, Vector{Float64}}
     vertices::Matrix{Float64}
     edges::Matrix{Float64}
 end
 
-function ConvexPolygon(vertices::Matrix{Float64})
+function ConvexPolygon(VP_Polygon, vertices::Matrix{Float64})
     # Get the number of the vertices 
     n = size(vertices, 2)
     # Set edges wit the last one connected to the first one
     edges = [vertices[:, i] - vertices[:, mod(i, n) + 1] for i in 1:n]
-    return ConvexPolygon(vertices, hcat(edges...))
+    return ConvexPolygon(VP_Polygon, vertices, hcat(edges...))
 end
 
 

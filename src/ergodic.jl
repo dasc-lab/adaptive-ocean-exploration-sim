@@ -214,7 +214,7 @@ end
 
 
 
-function convex_bounary_correction(convex_polygon, p, u; speed_max = 1.8, min_safe_d = 1.0)
+function convex_bounary_correction(convex_polygon, p, u; speed_max = 1.8, min_safe_d = 0.1)
 
     # Compute the closest point on the boundary of the convex shape to the robot pos p
     distance, closest_point = ConvexBoundAvoidance.minimum_distance_to_boundary(convex_polygon, p)

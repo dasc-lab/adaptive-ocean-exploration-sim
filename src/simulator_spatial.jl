@@ -98,6 +98,18 @@ struct SimResultWeighted{T,X,U,M,TV,W,EM}
   q_target_maps
 end
 
+struct SimResultWeightedSpeed{T,X,U,B,M,TV,W,EM}
+  ts::T
+  xs::X
+  us::U
+  bs::B
+  measurements::M
+  w_hat_ts::TV
+  w_hats::W
+  ergo_q_maps::EM
+  q_target_maps
+end
+
 
 
 struct SimResultPre{T,X,M,TV,W,EM}
@@ -150,7 +162,7 @@ function ngpkf_to_ergo(ngpkf_grid::G1, ergo_grid::G2, clarity_map) where {G1<:NG
 end
 
 
-function simulate_weighted_exp_SoC_spatial(ts, x0::XS, controllers, w_rated_val, speed_profile;
+function simulate_weighted_exp_SoC_spatial(ts, x0::XS, b0, controllers, soc_profile, w_rated_val;
   ngpkf_grid::G,
   EnvDataSpatial,
   σ_meas=0, 
@@ -159,10 +171,14 @@ function simulate_weighted_exp_SoC_spatial(ts, x0::XS, controllers, w_rated_val,
   fuse_measurements_every_ΔT=5.0,
   recompute_controller_every_ΔT=fuse_measurements_every_ΔT) where {X<:SVector,XS<:AbstractVector{X},G<:NGPKF.NGPKFGrid}
 
+  boat = SoCController.ASV_Params();
+  dayOfYear = 288; # corresponds to October 15th
+  lat = 35.45; # degrees
   
   # extract info from arguments
   t0 = ts[1]
   xs = [x0,]
+  bs = ones(1)*b0;
   N_robots = length(x0)
   ΔT = Base.step(ts)
 
@@ -193,7 +209,10 @@ function simulate_weighted_exp_SoC_spatial(ts, x0::XS, controllers, w_rated_val,
   M = ones(Nx, Ny)
   M *= w_rated_val
 
-  # TODO: Call the real-time speed controller
+  # Call the real-time speed controller
+  error = 0.0;
+  error_sum = 0.0;
+  speed, error_sum, error = SoCController.speed_controller(b0 ,soc_profile[1], error_sum, error);
 
   # decide the control input for the first step
   u0, q_target = controllers(t0, x0, M, w_rated_val;
@@ -201,10 +220,13 @@ function simulate_weighted_exp_SoC_spatial(ts, x0::XS, controllers, w_rated_val,
     ergo_grid=ergo_grid,
     ergo_q_map=ergo_q_maps[end],
     traj=vcat(xs...),
-    umax = speed_profile(t0),
+    umax = speed,
     ΔT=ΔT,
   )
   us = [u0,]
+
+  # update ASV state of charge
+  push!(bs, SoCController.batterymodel!(boat, dayOfYear, t0/60, lat, norm(u0), b0, ΔT/60))
 
   q_target_maps = [q_target,]
 
@@ -216,7 +238,7 @@ function simulate_weighted_exp_SoC_spatial(ts, x0::XS, controllers, w_rated_val,
     @progress for (it, t) in enumerate(ts[1:(end-1)])
       
       x = xs[end]
-
+      b = bs[end]
 
       # make a measurement from each robot
       ys = measure(t, x, EnvDataSpatial; σ_meas=σ_meas)
@@ -264,16 +286,15 @@ function simulate_weighted_exp_SoC_spatial(ts, x0::XS, controllers, w_rated_val,
 
         M = reshape(KF.μ(w_hats[end]), Nx, Ny)
 
-        # TODO: Call the real-time SOC controller
-        # Pass the Target SOC trajectory, current SOC, current time
+        # Call the real-time speed controller
+        speed, error_sum, error = SoCController.speed_controller(b, soc_profile[it], error_sum, error);
 
-        # New ergodic vector is updated every 5 seconds
         u, q_target = controllers(t, x, M, w_rated_val;
           ngpkf_grid=ngpkf_grid,
           ergo_grid=ergo_grid,
           ergo_q_map=ergo_q_maps[end], # current clarity
           traj=traj,  # list of all points visited by all agents
-          umax = speed_profile(t),
+          umax = speed,
           ΔT=ΔT,
         )
         
@@ -293,21 +314,11 @@ function simulate_weighted_exp_SoC_spatial(ts, x0::XS, controllers, w_rated_val,
       # update 
       u = us[end] # use the last control input
       new_xs = step(t, xs[end], u, ΔT)
-      # TODO: update SOC state for the vehicle (add output to step function)
-
-      # if isnan(new_xs[1])
-      #   println("New state: $(new_xs)")
-      # end
       push!(xs, new_xs)
+      push!(bs, SoCController.batterymodel!(boat, dayOfYear, t/60, lat, norm(u), b, ΔT/60))
 
     end
-
-  # catch e
-    # println(e)
-  # end
-
-  return SimResultWeighted(ts, xs, us, measurements, w_hat_ts, w_hats, ergo_q_maps, q_target_maps)
-
+  return SimResultWeightedSpeed(ts, xs, us, bs, measurements, w_hat_ts, w_hats, ergo_q_maps, q_target_maps)
 end
 
 

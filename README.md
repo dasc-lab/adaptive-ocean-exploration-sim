@@ -19,6 +19,24 @@ Specifications:
 - update the interfaces to handle battery and solar
 - deltaT for simulation needs to be set: 1 minute
 
+## Update Rates
+- Ergodic descent direction is computed every 60 seconds
+- Ergodic velocity vector (based on Kavin's speed profile) is computed every 60 seconds
+
+This results in a ergodic velocity vector (this is x,y velocities).
+
+We feed this into the boundary avoidance system (Force Field), which generates the final control velocity vector every 1 seconds (need to tune maybe).
+
+Measurements are collected at the rate at which the sensors provide them (can be on the order of 1-60 Hz).
+
+Measurements have a location and value associated with them. 
+We queue sensor data in a buffer.
+Every 5 seconds, we average the values of the sensor data to generate a single measurement packet (Time, Location, Wind Speeds, SOC, etc).
+
+Every 300 seconds (5 minutes);
+- Hyperaparmeters are re-estimated every 300 seconds (5 minutes)
+- Kalman Filter update/new resource estimate is recomputed every 300 seconds (5 minutes) (Maybe we should run the KF update more frequently than the HP updates?)
+
 ## Interfaces:
 
 ### Controller

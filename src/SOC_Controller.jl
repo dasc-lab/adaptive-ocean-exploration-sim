@@ -260,7 +260,34 @@ function generate_vel_profile(t, Δt, soc_begin, soc_target)
 end
 
 
-# Target SOC based PID speed controller
+"""
+Real-time PID controller for speed control.
+...
+# Arguments
+- `current_soc::Float64`: the current state of charge of the ASV.
+- `target_soc::Float64`: the goal state of charge of the ASV at the computation timestep.
+- `error_sum::Float64`: the summation of error over the mission.
+- `error::Float64`: the error from the previous computation.
+...
+"""
+function speed_controller(current_soc, target_soc, error_sum, error)
+    # PID Gains
+    kp = 0.5; 
+    ki = 0.01;
+    kd = 0.5;
+
+    # PID
+    prev_error = error;
+    error = current_soc - target_soc;
+    error_sum += error;
+    difference = error - prev_error;
+    speed = kp*error + ki*error_sum + kd*difference;
+    speed = max(0, min(speed, boat.v_max));
+
+    return speed, error_sum, error
+end
+
+# Target SOC based PID speed controller - using an error vector
 function speed_controller(current_soc, target_soc, error)
     # PID Gains
     kp = 0.5; 

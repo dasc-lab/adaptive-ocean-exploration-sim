@@ -805,8 +805,9 @@ function simulate_spatial_w_speed(ts, x0::XS, b0, controllers, soc_profile;
   measurements = [measure(t0, x0, EnvDataSpatial; σ_meas = σ_meas)...]  
 
   # Compute velocity for first step
-  error = zeros(1);
-  speed, error = SoCController.speed_controller(b0 ,soc_profile[1], error)
+  error = 0.0;
+  error_sum = 0.0;
+  speed, error_sum, error = SoCController.speed_controller(b0 ,soc_profile[1], error_sum, error);
 
   # decide the control input for the first step
   u0 = controllers(t0, x0;
@@ -874,7 +875,8 @@ function simulate_spatial_w_speed(ts, x0::XS, b0, controllers, soc_profile;
       # if (t - last_control_update_time >= recompute_controller_every_ΔT)
       #   # chose a control action
 
-        speed, error = SoCController.speed_controller(b, soc_profile[it], error)
+        speed, error_sum, error = SoCController.speed_controller(b, soc_profile[it], error_sum, error);
+        # speed, error = SoCController.speed_controller(b, soc_profile[it], error)
 
         traj = vcat(xs...)
 

@@ -1,6 +1,6 @@
 module Variograms
 
-using LinearAlgebra, LsqFit, StatsBase
+using LinearAlgebra, LsqFit, StatsBase, DataFrames
 
 # Function to calculate pairwise distances
 function pairwise_distances(measurements)
@@ -10,8 +10,8 @@ function pairwise_distances(measurements)
 
     for i in 1:n
         for j in 1:n
-            h[i, j] = sqrt((measurements[i].x - measurements[j].x)^2 + (measurements[i].y - measurements[j].y)^2)
-            γ[i, j] = 0.5 * (measurements[i].vel - measurements[j].vel)^2
+            h[i, j] = sqrt((measurements[i].p[1] - measurements[j].p[1])^2 + (measurements[i].p[2] - measurements[j].p[2])^2)
+            γ[i, j] = 0.5 * (measurements[i].y - measurements[j].y)^2
         end
     end
     return h, γ
@@ -122,6 +122,14 @@ function rls_weight(emp_vario, initial_params, λ)
     
 
     return params
+end
+
+"Fit hyperparameters to measurements"
+function hp_fit(measurements)
+    h, γ = pairwise_distances(measurements);
+    emp_vario = empirical_variogram(h, γ);
+    param_fit = curve_fit(matern12_variogram, emp_vario.h_mid, emp_vario.variogram, [1.0,1.0]);
+    return param_fit.param[1], param_fit.param[2]
 end
 
 end

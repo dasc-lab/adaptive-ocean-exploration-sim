@@ -139,8 +139,4 @@ function update_and_predict!(estimator::Estimator,
                                                 𝐇ᵇᵃʳ(key_parameters)))
 end
 
-function get_current_clarity(estimator::Estimator)
-    1 ./ (1 .+ diag(estimator.𝚺ⱼₗᵢ_𝐱ʰᵃᵗ[:, :, 1]))
-end
-
 end

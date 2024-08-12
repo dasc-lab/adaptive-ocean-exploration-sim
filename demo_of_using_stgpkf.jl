@@ -90,9 +90,9 @@ eᴬᵛᵍᴬᵇˢ = zeros(Int(T / Δt)) # average (over all locations) absolute
 # Definition is complete
 
 for i = 1:Int(T / Δt)
-    sᵢ = trajectory[i]
-    yᵢ = 𝐱[sᵢ, i] + σᵣ * randn() # Collect measurement
-    STGPKF.update_and_predict!(estimator_1, key_parameters_1, yᵢ, sᵢ)
+    𝐬ᵢᵗⁱˡᵈᵉ = 𝐬[trajectory[i]]
+    yᵢ = 𝐱[trajectory[i], i] + σᵣ * randn() # Collect measurement
+    STGPKF.update_and_predict!(estimator_1, key_parameters_1, yᵢ, 𝐬ᵢᵗⁱˡᵈᵉ)
     clarity = STGPKF.get_current_clarity(estimator_1)
 
     eᴬᵛᵍᴬᵇˢ[i] = mean(abs.(estimator_1.𝐱ʰᵃᵗⱼₗᵢ[:, 1] - 𝐱[:, i]))

@@ -41,6 +41,10 @@ function 𝐊ₘʰᵃˡᶠ(key_parameters::KeyParameters)
     cholesky(𝐊ₘ(key_parameters)).L
 end
 
+function 𝐊ₘ⁻¹(key_parameters::KeyParameters)
+    inv(𝐊ₘ(key_parameters))
+end
+
 function Σ₀(key_parameters::KeyParameters)
     1 / (2 * key_parameters.λₜ)
 end
@@ -94,10 +98,9 @@ function initialize!(estimator::Estimator, key_parameters::KeyParameters)
 end
 
 function update_and_predict!(estimator::Estimator,
-    key_parameters::KeyParameters, yᵢ::Float64, sᵢ::Int64)
+    key_parameters::KeyParameters, yᵢ::Float64, 𝐬ᵢᵗⁱˡᵈᵉ::Vector{Float64})
     # Update
-    𝐇ᵢᵗⁱˡᵈᵉ = zeros(1, M)
-    𝐇ᵢᵗⁱˡᵈᵉ[sᵢ] = 1
+    𝐇ᵢᵗⁱˡᵈᵉ = reshape([kₛ(key_parameters, 𝐬ᵢᵗⁱˡᵈᵉ, 𝐬[j]) for j = 1:M], (1, M)) * 𝐊ₘ⁻¹(key_parameters)
     𝐂ᵢ = 𝐇ᵢᵗⁱˡᵈᵉ * 𝐊ₘʰᵃˡᶠ(key_parameters) * 𝐇ᵇᵃʳ(key_parameters)
     𝐑ᵢ = Diagonal(key_parameters.σᵣ * ones(length(yᵢ)))
     𝐋ᵢ = (estimator.𝚺ⱼₗᵢ[:, :, 2] * transpose(𝐂ᵢ)

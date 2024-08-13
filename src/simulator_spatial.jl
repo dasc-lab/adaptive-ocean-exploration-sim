@@ -76,6 +76,16 @@ end
 #   ergo_q_maps::EM
 # end
 
+struct SimResult_NonSOC{T,X,U,M,TV,W,EM}
+  ts::T
+  xs::X
+  us::U
+  measurements::M
+  w_hat_ts::TV
+  w_hats::W
+  ergo_q_maps::EM
+end
+
 struct SimResult{T,X,U,B,M,TV,W,EM}
   ts::T
   xs::X
@@ -98,10 +108,11 @@ struct SimResultWeighted{T,X,U,M,TV,W,EM}
   q_target_maps
 end
 
-struct SimResultWeightedSpeed{T,X,U,B,M,TV,W,EM}
+struct SimResultWeightedSpeed{T,X,U,S,B,M,TV,W,EM}
   ts::T
   xs::X
   us::U
+  speeds::S
   bs::B
   measurements::M
   w_hat_ts::TV
@@ -110,10 +121,11 @@ struct SimResultWeightedSpeed{T,X,U,B,M,TV,W,EM}
   q_target_maps
 end
 
-struct SimResultWeightedSpeedParams{T,X,U,B,S,L,M,TV,W,EM}
+struct SimResultWeightedSpeedParams{T,X,U,SP,B,S,L,M,TV,W,EM}
   ts::T
   xs::X
   us::U
+  speeds::SP
   bs::B
   σ_s::S
   λ_s::L
@@ -225,6 +237,7 @@ function simulate_weighted_exp_SoC_spatial(ts, x0::XS, b0, controllers, soc_prof
   error = 0.0;
   error_sum = 0.0;
   speed, error_sum, error = SoCController.speed_controller(b0 ,soc_profile[1], error_sum, error);
+  speeds = [speed];
 
   # decide the control input for the first step
   u0, q_target = controllers(t0, x0, M, w_rated_val;
@@ -303,6 +316,7 @@ function simulate_weighted_exp_SoC_spatial(ts, x0::XS, b0, controllers, soc_prof
 
         # Call the real-time speed controller
         speed, error_sum, error = SoCController.speed_controller(b, soc_profile[it], error_sum, error);
+        push!(speeds, speed);
 
         u, q_target = controllers(t, x, M, w_rated_val;
           ngpkf_grid=ngpkf_grid,
@@ -819,9 +833,6 @@ function simulate_weighted_spatial(ts, x0::XS, controllers;
 
 end
 
-# Simulate Spatiotemporal 
-
-
 
 function simulate_spatial_cvx_bound(ts, x0::XS, controllers, convex_polygon;
   ngpkf_grid::G,
@@ -959,7 +970,352 @@ function simulate_spatial_cvx_bound(ts, x0::XS, controllers, convex_polygon;
     # println(e)
   # end
 
-  return SimResult(ts, xs, us, measurements, w_hat_ts, w_hats, ergo_q_maps)
+  return SimResult_NonSOC(ts, xs, us, measurements, w_hat_ts, w_hats, ergo_q_maps)
+
+end
+
+function simulate_spatial_cvx_bound_speed(ts, x0::XS, b0, controllers, soc_profile, convex_polygon;
+  ngpkf_grid::G,
+  EnvDataSpatial,
+  σ_meas=0, 
+  σ_process=0,
+  Q_process = σ_process^2 * I,
+  fuse_measurements_every_ΔT=5.0,
+  recompute_controller_every_ΔT=fuse_measurements_every_ΔT) where {X<:SVector,XS<:AbstractVector{X},G<:NGPKF.NGPKFGrid}
+
+  boat = SoCController.ASV_Params();
+  dayOfYear = 288; # corresponds to October 15th
+  lat = 35.45; # degrees
+  
+  # extract info from arguments
+  t0 = ts[1]
+  xs = [x0,]
+  bs = ones(1)*b0;
+  N_robots = length(x0)
+  ΔT = Base.step(ts)
+
+  Ns_grid = length(ngpkf_grid.xs), length(ngpkf_grid.ys) # The grid of size (64, 32)
+  ergo_grid = ErgoGrid(ngpkf_grid, (256, 256))
+
+  # setup map states
+  w_hat_ts = [t0,]
+
+  w_hat = NGPKF.initialize(ngpkf_grid)
+  w_hats = [w_hat,]
+
+  # check the covariances
+  # print(NGPKF.KF.Σ(w_hat))
+  # @assert false
+
+  # clarity map
+  q_map = NGPKF.clarity_map(ngpkf_grid, w_hat)
+  ergo_q_map = ngpkf_to_ergo(ngpkf_grid, ergo_grid, q_map)
+  ergo_q_maps = [ergo_q_map,]
+
+  # get a measurement
+  # ys = [measure(t0, x0[i], EnvDataSpatial; σ_meas=σ_meas) for i = 1:N_robots]
+  measurements = [measure(t0, x0, EnvDataSpatial; σ_meas = σ_meas)...]  
+
+  # Call the real-time speed controller
+  error = 0.0;
+  error_sum = 0.0;
+  speed, error_sum, error = SoCController.speed_controller(b0 ,soc_profile[1], error_sum, error);
+
+  speeds = [speed];
+
+  # decide the control input for the first step
+  u0 = controllers(t0, x0, convex_polygon;
+    ngpkf_grid=ngpkf_grid,
+    ergo_grid=ergo_grid,
+    ergo_q_map=ergo_q_maps[end],
+    traj=vcat(xs...),
+    umax = speed,
+    ΔT=ΔT,
+  )
+  us = [u0,]
+
+  # update ASV state of charge
+  push!(bs, SoCController.batterymodel!(boat, dayOfYear, t0/60, lat, norm(u0), b0, ΔT/60))
+
+  last_measurement_fuse_time = t0
+  last_measurement_fuse_index = 0
+
+  last_control_update_time = t0
+  # try
+    @progress for (it, t) in enumerate(ts[1:(end-1)])
+      
+      x = xs[end]
+      b = bs[end]
+
+      # make a measurement from each robot
+      ys = measure(t, x, EnvDataSpatial; σ_meas=σ_meas)
+      append!(measurements, ys)
+      # check if we need to fuse measurements
+      if (t - last_measurement_fuse_time) >= fuse_measurements_every_ΔT
+
+        # # collect all the locations we have made measurements
+        # measurement_pos = vcat(xs[last_measurement_fuse_index:end]...)
+        # measurement_w = vcat(measurements[last_measurement_fuse_index:end]...)
+
+        # # extract x and y components of the measurements
+        # measurements_wx = [w[1] for w in measurement_w]
+        # measurements_wy = [w[2] for w in measurement_w]
+
+        # run NGPKF
+        w_hat = NGPKF.predict(ngpkf_grid, w_hats[end]; Q_process=Q_process)
+
+        # grab the data again
+        new_measurements = measurements[(last_measurement_fuse_index+1):end]
+        measurement_pos = [m.p for m in new_measurements]
+        measurements_w = [m.y for m in new_measurements]
+
+        # run the fusion
+        w_hat_new = NGPKF.correct(ngpkf_grid, w_hat, measurement_pos, measurements_w; σ_meas=σ_meas)
+        
+        # save the new maps
+        push!(w_hat_ts, t)
+        push!(w_hats, w_hat_new)
+
+        # update the clarity map
+        q_map = NGPKF.clarity_map(ngpkf_grid, w_hat_new)
+        ergo_q_map = ngpkf_to_ergo(ngpkf_grid, ergo_grid, q_map)
+        push!(ergo_q_maps, ergo_q_map)
+
+        last_measurement_fuse_time = t
+        last_measurement_fuse_index = length(measurements)
+      end
+
+
+      # if (t - last_control_update_time >= recompute_controller_every_ΔT)
+      #   # chose a control action
+
+        traj = vcat(xs...)
+
+        # Call the real-time speed controller
+        speed, error_sum, error = SoCController.speed_controller(b, soc_profile[it], error_sum, error);
+        push!(speeds, speed);
+
+        u = controllers(t, x, convex_polygon;
+          ngpkf_grid=ngpkf_grid,
+          ergo_grid=ergo_grid,
+          ergo_q_map=ergo_q_maps[end], # current clarity
+          traj=traj,  # list of all points visited by all agents
+          umax = speed,
+          ΔT=ΔT,
+        )
+        
+        # Debug 01
+        # if isnan(x[1])
+        #   println("current state: $(x)")
+        # end
+
+
+        push!(us, u)
+
+      #   last_control_update_time = t
+
+      # end
+
+      # update 
+      u = us[end] # use the last control input
+      new_xs = step(t, xs[end], u, ΔT)
+
+      # if isnan(new_xs[1])
+      #   println("New state: $(new_xs)")
+      # end
+      push!(xs, new_xs)
+      push!(bs, SoCController.batterymodel!(boat, dayOfYear, t/60, lat, norm(u), b, ΔT/60))
+
+    end
+
+  # catch e
+    # println(e)
+  # end
+  q_target_maps = 0;
+
+  return SimResultWeightedSpeed(ts, xs, us, speeds, bs, measurements, w_hat_ts, w_hats, ergo_q_maps, q_target_maps)
+
+end
+
+function simulate_spatial_cvx_bound_speed_param(ts, x0::XS, b0, controllers, soc_profile, convex_polygon;
+  ngpkf_grid::G,
+  EnvDataSpatial,
+  σ_meas=0, 
+  σ_process=0,
+  Q_process = σ_process^2 * I,
+  fuse_measurements_every_ΔT=5.0,
+  recompute_controller_every_ΔT=fuse_measurements_every_ΔT) where {X<:SVector,XS<:AbstractVector{X},G<:NGPKF.NGPKFGrid}
+
+  boat = SoCController.ASV_Params();
+  dayOfYear = 288; # corresponds to October 15th
+  lat = 35.45; # degrees
+
+  # store hyperparameter estimates
+  σs = [1.0, ]
+  λs = [1.0, ]
+  
+  # extract info from arguments
+  t0 = ts[1]
+  xs = [x0,]
+  bs = ones(1)*b0;
+  N_robots = length(x0)
+  ΔT = Base.step(ts)
+
+  Ns_grid = length(ngpkf_grid.xs), length(ngpkf_grid.ys) # The grid of size (64, 32)
+  ergo_grid = ErgoGrid(ngpkf_grid, (256, 256))
+
+  # setup map states
+  w_hat_ts = [t0,]
+
+  w_hat = NGPKF.initialize(ngpkf_grid)
+  w_hats = [w_hat,]
+
+  # check the covariances
+  # print(NGPKF.KF.Σ(w_hat))
+  # @assert false
+
+  # clarity map
+  q_map = NGPKF.clarity_map(ngpkf_grid, w_hat)
+  ergo_q_map = ngpkf_to_ergo(ngpkf_grid, ergo_grid, q_map)
+  ergo_q_maps = [ergo_q_map,]
+
+  # get a measurement
+  # ys = [measure(t0, x0[i], EnvDataSpatial; σ_meas=σ_meas) for i = 1:N_robots]
+  measurements = [measure(t0, x0, EnvDataSpatial; σ_meas = σ_meas)...]  
+
+  # Call the real-time speed controller
+  error = 0.0;
+  error_sum = 0.0;
+  speed, error_sum, error = SoCController.speed_controller(b0 ,soc_profile[1], error_sum, error);
+
+  speeds = [speed];
+
+  # decide the control input for the first step
+  u0 = controllers(t0, x0, convex_polygon;
+    ngpkf_grid=ngpkf_grid,
+    ergo_grid=ergo_grid,
+    ergo_q_map=ergo_q_maps[end],
+    traj=vcat(xs...),
+    umax = speed,
+    ΔT=ΔT,
+  )
+  us = [u0,]
+
+  # update ASV state of charge
+  push!(bs, SoCController.batterymodel!(boat, dayOfYear, t0/60, lat, norm(u0), b0, ΔT/60))
+
+  last_measurement_fuse_time = t0
+  last_measurement_fuse_index = 0
+
+  last_control_update_time = t0
+  # try
+    @progress for (it, t) in enumerate(ts[1:(end-1)])
+      
+      x = xs[end]
+      b = bs[end]
+
+      # make a measurement from each robot
+      ys = measure(t, x, EnvDataSpatial; σ_meas=σ_meas)
+      append!(measurements, ys)
+      # check if we need to fuse measurements
+      if (t - last_measurement_fuse_time) >= fuse_measurements_every_ΔT
+
+        # Fit new hyperparameters
+        σ, λ = Variograms.hp_fit(measurements)
+        push!(σs, σ)
+        push!(λs, λ)
+
+        # Update KF
+        res_factor = 0.1 #l_spatial / sqrt(2.0)
+
+        kern = NGPKF.MaternKernel(σ, 1/λ)
+
+        ngp_grid_x = range(extrema(EnvDataSpatial.X)..., step= res_factor )
+        ngp_grid_y = range(extrema(EnvDataSpatial.Y)..., step= res_factor )
+
+        ngpkf_grid = NGPKF.NGPKFGrid(ngp_grid_x, ngp_grid_y, kern)
+
+        # # collect all the locations we have made measurements
+        # measurement_pos = vcat(xs[last_measurement_fuse_index:end]...)
+        # measurement_w = vcat(measurements[last_measurement_fuse_index:end]...)
+
+        # # extract x and y components of the measurements
+        # measurements_wx = [w[1] for w in measurement_w]
+        # measurements_wy = [w[2] for w in measurement_w]
+
+        # run NGPKF
+        w_hat = NGPKF.predict(ngpkf_grid, w_hats[end]; Q_process=Q_process)
+
+        # grab the data again
+        new_measurements = measurements[(last_measurement_fuse_index+1):end]
+        measurement_pos = [m.p for m in new_measurements]
+        measurements_w = [m.y for m in new_measurements]
+
+        # run the fusion
+        w_hat_new = NGPKF.correct(ngpkf_grid, w_hat, measurement_pos, measurements_w; σ_meas=σ_meas)
+        
+        # save the new maps
+        push!(w_hat_ts, t)
+        push!(w_hats, w_hat_new)
+
+        # update the clarity map
+        q_map = NGPKF.clarity_map(ngpkf_grid, w_hat_new)
+        ergo_q_map = ngpkf_to_ergo(ngpkf_grid, ergo_grid, q_map)
+        push!(ergo_q_maps, ergo_q_map)
+
+        last_measurement_fuse_time = t
+        last_measurement_fuse_index = length(measurements)
+      end
+
+
+      # if (t - last_control_update_time >= recompute_controller_every_ΔT)
+      #   # chose a control action
+
+        traj = vcat(xs...)
+
+        # Call the real-time speed controller
+        speed, error_sum, error = SoCController.speed_controller(b, soc_profile[it], error_sum, error);
+        push!(speeds, speed);
+
+        u = controllers(t, x, convex_polygon;
+          ngpkf_grid=ngpkf_grid,
+          ergo_grid=ergo_grid,
+          ergo_q_map=ergo_q_maps[end], # current clarity
+          traj=traj,  # list of all points visited by all agents
+          umax = speed,
+          ΔT=ΔT,
+        )
+        
+        # Debug 01
+        # if isnan(x[1])
+        #   println("current state: $(x)")
+        # end
+
+
+        push!(us, u)
+
+      #   last_control_update_time = t
+
+      # end
+
+      # update 
+      u = us[end] # use the last control input
+      new_xs = step(t, xs[end], u, ΔT)
+
+      # if isnan(new_xs[1])
+      #   println("New state: $(new_xs)")
+      # end
+      push!(xs, new_xs)
+      push!(bs, SoCController.batterymodel!(boat, dayOfYear, t/60, lat, norm(u), b, ΔT/60))
+
+    end
+
+  # catch e
+    # println(e)
+  # end
+  q_target_maps = 0;
+
+  return SimResultWeightedSpeedParams(ts, xs, us, speeds, bs, σs, λs, measurements, w_hat_ts, w_hats, ergo_q_maps, q_target_maps)
 
 end
 

@@ -132,4 +132,59 @@ function hp_fit(measurements)
     return param_fit.param[1], param_fit.param[2]
 end
 
+
+# Function to calculate pairwise distances
+function pairwise_distances_st(measurements)
+    n = length(measurements)
+    h = zeros(n, n)  # Spatial distances
+    u = zeros(n, n)  # Temporal distances
+    γ = zeros(n, n)  # Semi-variogram
+
+    for i in 1:n
+        for j in 1:n
+            h[i, j] = sqrt((measurements[i].x - measurements[j].x)^2 + (measurements[i].y - measurements[j].y)^2)
+            u[i, j] = abs(measurements[i].t - measurements[j].t)
+            γ[i, j] = 0.5 * (measurements[i].vel - measurements[j].vel)^2
+        end
+    end
+    return h, u, γ
+end
+
+# Function to calculate the empirical variogram
+function empirical_variogram_st(h, u, γ, n_bins=50)
+    h_max = maximum(h)
+    u_max = maximum(u)
+    h_edges = range(0, h_max, length=n_bins+1)
+    u_edges = range(0, u_max, length=n_bins+1)
+    
+    bins = DataFrame(h_mid = Float64[], u_mid = Float64[], variogram = Float64[], count = Int64[])
+    
+    for i in 1:n_bins
+        for j in 1:n_bins
+            h_bin = h_edges[i] .<= h .< h_edges[i+1]
+            u_bin = u_edges[j] .<= u .< u_edges[j+1]
+            mask = h_bin .& u_bin
+            bin_count = count(mask)
+            if bin_count > 0
+                h_mid = (h_edges[i] + h_edges[i+1]) / 2
+                u_mid = (u_edges[j] + u_edges[j+1]) / 2
+                variogram_value = mean(γ[mask])
+                push!(bins, (h_mid, u_mid, variogram_value, bin_count))
+            end
+        end
+    end
+    return bins
+end
+
+function matern12_variogram(h, u, σ_sq, λₓ, λₜ)
+    return σ_sq .* (1 .- exp.(-h./λₓ) .* exp.(-u./λₜ))
+end
+
+function matern12_variogram(lags, p)
+    h = lags[:,1]
+    u = lags[:,2]
+    return p[1] .* (1 .- exp.(-h./p[2]).* exp.(-u./p[3]))
+end
+
+
 end

@@ -2,6 +2,8 @@ module SyntheticData
 
 using Interpolations
 
+import ..STGPKF
+
 export EnvDataSpatial
 export EnvDataST
 
@@ -123,6 +125,59 @@ function matern12_spatiotemporal(sdim, tdim, xstart, xstop, ystart, ystop, tstar
     X = collect(x)
     Y = collect(y)   
     T = collect(temporal_points)
+
+    return EnvDataST(X, Y, T, W)
+end
+
+# Generate spatiotemporal Matern12 synthetic data
+# TODO: Currently defaults to ZeroMean Mean Function, overload to include other mean functions
+function synth_stgpkf(sdim, tdim, xstart, xstop, ystart, ystop, ts, Δt, σ, λₛ, λₜ)
+   # Define covariance functions
+    kₛ(𝐬₁, 𝐬₂) = exp(-λₛ * norm(𝐬₁ - 𝐬₂));
+    kₜ(t₁, t₂) = σ^2 * exp(-λₜ * (t₁ - t₂));
+    k(𝐬₁, t₁, 𝐬₂, t₂) = kₛ(𝐬₁, 𝐬₂) * kₜ(t₁, t₂);
+
+    # Establish Jordan Lake Domain
+    xvals = range(xstart, stop=xstop, length=sdim)
+    yvals = range(ystart, stop=ystop, length=sdim)
+    domain = Vector{Vector{Float64}}()
+    points = [[x, y] for y in yvals for x in xvals]
+    for p in points
+        push!(domain, p)
+    end
+    M = length(domain);
+
+    𝐊ₘ = reshape([kₛ(domain[j], domain[i]) for i = 1:M for j = 1:M], (M, M));
+
+    𝐊ₘʰᵃˡᶠ = cholesky(𝐊ₘ).L;
+    # 𝐊ₘʰᵃˡᶠ = sqrt(𝐊ₘ)
+
+    F = -λₜ;
+    G = 1;
+    H = σ * sqrt(2 * λₜ);
+    Σ₀ = 1 / (2 * λₜ);
+    𝐇ᵇᵃʳ = Diagonal(H * ones(M));
+
+    # Simulate env_data for all i ∈ {1, ..., T / Δt}
+    env_data = zeros(M, length(ts))
+
+    Random.seed!(3) # Set seed for reproducibility
+    𝐯ᵢ = sqrt(Σ₀) * randn(M)
+    for i = 1:length(ts)
+        𝐰ᵢᵗⁱˡᵈᵉ = sqrt(1 / (2 * λₜ) * (1 - exp(-2 * λₜ * Δt))) * randn(M)
+        𝐯ᵢ = exp(-λₜ * Δt) * 𝐯ᵢ + 𝐰ᵢᵗⁱˡᵈᵉ
+        𝐳ᵢ = H * 𝐯ᵢ
+        env_data[:, i] = 𝐊ₘʰᵃˡᶠ * 𝐳ᵢ
+    end
+
+    # Reshape the data into a 3D array (spatial_x, spatial_y, temporal)
+    W = reshape(env_data, sdim, sdim, tdim);
+
+    # return W
+    
+    X = xvals
+    Y = yvals   
+    T = range(ts[1], stop=ts[end], length=length(ts))
 
     return EnvDataST(X, Y, T, W)
 end

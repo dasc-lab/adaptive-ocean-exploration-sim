@@ -74,6 +74,22 @@ struct SimResultWeightedSpeed{T,X,U,S,B,M,TV,W,EM}
   q_target_maps
 end
 
+struct SimResultWeightedSpeedParams{T,X,U,SP,B,S,LS,LT,M,TV,W,EM}
+  ts::T
+  xs::X
+  us::U
+  speeds::SP
+  bs::B
+  σ_s::S
+  λx_s::LS
+  λt_s::LT
+  measurements::M
+  w_hat_ts::TV
+  w_hats::W
+  ergo_q_maps::EM
+  q_target_maps
+end
+
 function ErgoGrid(ngpkf_grid::G) where {G<:NGPKF.NGPKFGrid}
   origin = (ngpkf_grid.xs[1], ngpkf_grid.ys[1])
   dxs = (Base.step(ngpkf_grid.xs), Base.step(ngpkf_grid.ys))
@@ -399,7 +415,7 @@ function simulate_known_param(ts, x0::XS, b0, controllers, soc_profile, w_rated_
   σ_meas=0, 
   σ_process=0,
   Q_process = σ_process^2 * I,
-  fuse_measurements_every_ΔT=5.0,
+  fuse_measurements_every_ΔT=5.0/60,
   recompute_controller_every_ΔT=fuse_measurements_every_ΔT) where {X<:SVector,XS<:AbstractVector{X},G<:NGPKF.NGPKFGrid}
 
   boat = SoCController.ASV_Params();
@@ -610,7 +626,7 @@ function simulate_param_est(ts, x0::XS, b0, controllers, soc_profile, w_rated_va
   σ_meas=0, 
   σ_process=0,
   Q_process = σ_process^2 * I,
-  fuse_measurements_every_ΔT=5.0,
+  fuse_measurements_every_ΔT=5.0/60,
   recompute_controller_every_ΔT=fuse_measurements_every_ΔT) where {X<:SVector,XS<:AbstractVector{X},G<:NGPKF.NGPKFGrid}
 
   boat = SoCController.ASV_Params();
@@ -741,17 +757,18 @@ function simulate_param_est(ts, x0::XS, b0, controllers, soc_profile, w_rated_va
         # STGPKF.update_and_predict!(estimator, params, ys[end], 𝐬ᵢᵗⁱˡᵈᵉ)
 
          # Fit new hyperparameters
-         σ, λ = Variograms.hp_fit(measurements)
+         σ, λx, λt = Variograms.hp_fit(measurements)
          push!(σs, σ)
-         push!(λs, λ)
+         push!(λxs, λx)
+         push!(λts, λt)
 
          # Update KF
         res_factor = 0.1 #l_spatial / sqrt(2.0)
 
-        kern = NGPKF.MaternKernel(σ, 1/λ)
+        kern = NGPKF.MaternKernel(σ, 1/λx)
 
-        ngp_grid_x = range(extrema(EnvDataSpatial.X)..., step= res_factor )
-        ngp_grid_y = range(extrema(EnvDataSpatial.Y)..., step= res_factor )
+        ngp_grid_x = range(extrema(EnvData.X)..., step= res_factor )
+        ngp_grid_y = range(extrema(EnvData.Y)..., step= res_factor )
 
         ngpkf_grid = NGPKF.NGPKFGrid(ngp_grid_x, ngp_grid_y, kern)
 
@@ -829,8 +846,8 @@ function simulate_param_est(ts, x0::XS, b0, controllers, soc_profile, w_rated_va
   # catch e
     # println(e)
   # end
-
-  return SimResultWeightedSpeed(ts, xs, us, speeds, bs, measurements, w_hat_ts, w_hats, ergo_q_maps, q_target_maps)
+  
+  return SimResultWeightedSpeedParams(ts, xs, us, speeds, bs, σs, λxs, λts, measurements, w_hat_ts, w_hats, ergo_q_maps, q_target_maps)
 
 end
 

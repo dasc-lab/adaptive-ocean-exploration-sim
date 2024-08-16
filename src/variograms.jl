@@ -132,6 +132,14 @@ function hp_fit(measurements)
     return param_fit.param[1], param_fit.param[2]
 end
 
+"Fit hyperparameters to spatiotemporal measurements"
+function hp_fit(measurements)
+    h, u, γ = pairwise_distances_st(measurements);
+    emp_vario = empirical_variogram_st(h, u, γ);
+    lags = [emp_vario.h_mid emp_vario.u_mid]
+    param_fit = curve_fit(matern12_variogram, lags, emp_vario.variogram, [1.0,2.0,5.0])
+    return param_fit.param[1], param_fit.param[2], param_fit.param[3]
+end
 
 # Function to calculate pairwise distances
 function pairwise_distances_st(measurements)
@@ -142,9 +150,9 @@ function pairwise_distances_st(measurements)
 
     for i in 1:n
         for j in 1:n
-            h[i, j] = sqrt((measurements[i].x - measurements[j].x)^2 + (measurements[i].y - measurements[j].y)^2)
+            h[i, j] = sqrt((measurements[i].p[1] - measurements[j].p[1])^2 + (measurements[i].p[2] - measurements[j].p[2])^2)
             u[i, j] = abs(measurements[i].t - measurements[j].t)
-            γ[i, j] = 0.5 * (measurements[i].vel - measurements[j].vel)^2
+            γ[i, j] = 0.5 * (measurements[i].y - measurements[j].y)^2
         end
     end
     return h, u, γ

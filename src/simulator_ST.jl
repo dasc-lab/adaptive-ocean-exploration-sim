@@ -592,6 +592,12 @@ function simulate_known_param(ts, x0::XS, b0, controllers, soc_profile, w_rated_
         #   println("current state: $(x)")
         # end
 
+        if any(isnan.(u[1]))
+          println("u: ", u[end])
+          println("New state: $(xs[end])")
+          u[end] = [sign(0.7 - xs[end][1][1])*0.1,sign(3.25 - xs[end][1][2])*0.1]
+        end
+
 
         push!(us, u)
 
@@ -601,10 +607,13 @@ function simulate_known_param(ts, x0::XS, b0, controllers, soc_profile, w_rated_
 
       # update 
       u = us[end] # use the last control input
-      new_xs = step(t, xs[end], u, ΔT)
+      new_xs = step(t*60, xs[end], u, ΔT*60)
 
-      # if isnan(new_xs[1])
+    
+      # if any(isnan.(new_xs[1]))
       #   println("New state: $(new_xs)")
+      #   println("u: ", u)
+      #   println("speed: ", speed)
       # end
       push!(xs, new_xs)
       push!(bs, SoCController.batterymodel!(boat, dayOfYear, t, lat, norm(u0), b, ΔT))

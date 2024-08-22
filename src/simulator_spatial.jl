@@ -211,14 +211,6 @@ function simulate_weighted_exp_SoC_spatial(ts, x0::XS, controllers, w_rated_val,
       # check if we need to fuse measurements
       if (t - last_measurement_fuse_time) >= fuse_measurements_every_ΔT
 
-        # # collect all the locations we have made measurements
-        # measurement_pos = vcat(xs[last_measurement_fuse_index:end]...)
-        # measurement_w = vcat(measurements[last_measurement_fuse_index:end]...)
-
-        # # extract x and y components of the measurements
-        # measurements_wx = [w[1] for w in measurement_w]
-        # measurements_wy = [w[2] for w in measurement_w]
-
         # run NGPKF
         w_hat = NGPKF.predict(ngpkf_grid, w_hats[end]; Q_process=Q_process)
 

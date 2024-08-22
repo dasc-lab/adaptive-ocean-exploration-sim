@@ -115,7 +115,7 @@ function correct(s::S, y, C, V) where {S <: KFState}
   sqrtA_ = s.F + (s.F * C') * (-L')
   sqrtB_ = Γv * L'
 
-  F_new = qrr( sqrtA_ , sqrtB_)
+  F_new = qrr(sqrtA_ , sqrtB_)
 
   return KFState(μ_new, F_new)
 

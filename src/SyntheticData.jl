@@ -38,7 +38,7 @@ function EnvDataST(X, Y, T, W)
       end
 end
 
-
+# This is how to access the data
 function (eds::EnvDataSpatial)(x, y)
     return eds.itp_w(x, y)
 end

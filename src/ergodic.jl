@@ -326,7 +326,9 @@ end
 function controller_single_integrator_cvx_bound(grid, p, traj, M, convex_polygon; umax=1.0, do_boundary_correction=true)
     
     # println("M: $(M)")
+    # println("here")
     b_ergo = ergodic_descent_direction(grid, p, traj, M)
+    # println("b_ergo: $(b_ergo)")
     # println("b_ergo: $(b_ergo)")
     u_ergo = - umax * normalize(b_ergo)
     if any(isnan.(u_ergo))

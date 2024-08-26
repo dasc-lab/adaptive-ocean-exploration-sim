@@ -1491,7 +1491,7 @@ function simulate_weighted_exp_spatial_cvx_bound_speed(ts, x0::XS, b0, controlle
   N_robots = length(x0)
   ΔT = Base.step(ts)
 
-  Ns_grid = length(ngpkf_grid.xs), length(ngpkf_grid.ys) # The grid of size (64, 32)
+  Ns_grid = length(ngpkf_grid.xs), length(ngpkf_grid.ys)
   ergo_grid = ErgoGrid(ngpkf_grid, (256, 256))
 
   # setup map states
@@ -1526,14 +1526,19 @@ function simulate_weighted_exp_spatial_cvx_bound_speed(ts, x0::XS, b0, controlle
   speeds = [speed];
 
   # decide the control input for the first step
+  println("max speed defined: $(speed)")
+
   u0, q_target = controllers(t0, x0, M, w_rated_val,convex_polygon;
     ngpkf_grid=ngpkf_grid,
     ergo_grid=ergo_grid,
     ergo_q_map=ergo_q_maps[end],
     traj=vcat(xs...),
-    umax=speed,
+    umax=0.15,
     ΔT=ΔT,
+    P = 0,
   )
+
+  println("Initial control input: $(u0)")
   us = [u0,]
 
   # update ASV state of charge
@@ -1599,15 +1604,22 @@ function simulate_weighted_exp_spatial_cvx_bound_speed(ts, x0::XS, b0, controlle
 
         speed, error_sum, error = SoCController.speed_controller(b, soc_profile[it], error_sum, error);
         push!(speeds, speed);
+
+        # println("In Loop")
+        # println("speed : $(speed)")
+        # println("x : $(x)")
         
         u, q_target = controllers(t, x, M, w_rated_val,convex_polygon;
           ngpkf_grid=ngpkf_grid,
           ergo_grid=ergo_grid,
           ergo_q_map=ergo_q_maps[end], # current clarity
           traj=traj,  # list of all points visited by all agents
-          umax=speed,
+          umax=0.15,
           ΔT=ΔT,
+          P = 1,
         )
+
+        # return q_target
         
         push!(q_target_maps, q_target)
         # Debug 01

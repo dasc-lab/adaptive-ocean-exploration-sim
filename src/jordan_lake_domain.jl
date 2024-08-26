@@ -1,6 +1,7 @@
 module JordanLakeDomain
 export 𝐬 # Vector of vectors of x- and y-coordinates in units of km
 export convex_polygon # Boundary of region of interest in Jordan lake
+export grid_mesh, meshx, meshy
 
 using LazySets
 include("Convex_bound_avoidance.jl")
@@ -32,6 +33,9 @@ vertices = [0.4 0.7362 1.1925 1.3366 0.2559 0.0398;
 
 # Create a ConvexPolygon object
 convex_polygon = ConvexBoundAvoidance.ConvexPolygon(VP_Polygon, vertices)
+grid_mesh = Vector{Vector{Float64}}() # Domain Grid Points
+meshx = Vector{Float64}()
+meshy = Vector{Float64}()
 
 𝐬 = Vector{Vector{Float64}}() # points of polygon
 M = length(𝐬)
@@ -60,6 +64,15 @@ let
         if p ∈ VP_Polygon
             push!(𝐬, p)
         end
+        push!(grid_mesh, p)
+    end
+
+    for p in mesh_x
+        push!(meshx, p)
+    end
+
+    for p in mesh_y
+        push!(meshy, p)
     end
 
     # sdim = 100; # number of data points along each axis in the domain (defining a square domain)

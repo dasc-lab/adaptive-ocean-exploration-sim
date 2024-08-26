@@ -437,7 +437,7 @@ function simulate_known_param(ts, x0::XS, b0, controllers, soc_profile, w_rated_
 
   # TODO: Replace with STGPKF.initialize()
   w_hat = NGPKF.initialize(ngpkf_grid)
-  # STGPKF.initialize!(estimator, params)
+  STGPKF.initialize!(estimator, params)
   # w_hat = reshape(estimator.𝐱ʰᵃᵗⱼₗᵢ[:, 1], Nx, Ny)
   w_hats = [w_hat,]
 

@@ -2,7 +2,8 @@ module SimulatorST
 
 using LinearAlgebra, StaticArrays, Interpolations
 using ProgressLogging
-using ..SyntheticData, ..NGPKF, ..ErgodicController, ..KF, ..SoCController, ..Variograms, ..STGPKF, ..JordanLakeDomain
+using SpatiotemporalGPs
+using ..SyntheticData, ..NGPKF, ..ErgodicController, ..KF, ..SoCController, ..Variograms, ..JordanLakeDomain
 
 
 # MATERN SPATIAL LENGTH SCALE = 1.0 km
@@ -28,6 +29,10 @@ end
 function measure(t, ps::VSV, data::EDST; σ_meas=0, Q_meas = σ_meas * I) where {EDST<:EnvDataST,SV<:SVector{2}, VSV <: AbstractVector{SV}}
   return [measure(t, p, data; Q_meas=Q_meas) for p in ps]
 
+end
+
+function measure(data, x, y, t, σ_m=0.1)
+  return data.itp(x, y, t) + σ_m *randn()
 end
 
 
@@ -409,7 +414,7 @@ function simulate(ts, x0::XS, controllers;
 end
 
 # Spatiotemporal Jordan Lake Simulation with known hyperparameters
-function simulate_known_param(ts, x0::XS, b0, controllers, soc_profile, w_rated_val, convex_polygon, params, estimator;
+function simulate_known_param(ts, x0::XS, b0, controllers, soc_profile, w_rated_val, convex_polygon, stgp_problem;
   ngpkf_grid::G,
   EnvData,
   σ_meas=0, 
@@ -434,12 +439,14 @@ function simulate_known_param(ts, x0::XS, b0, controllers, soc_profile, w_rated_
 
   # setup map states
   w_hat_ts = [t0,]
+  stg_hat_ts = [t0, ]
 
   # TODO: Replace with STGPKF.initialize()
   w_hat = NGPKF.initialize(ngpkf_grid)
-  STGPKF.initialize!(estimator, params)
+  stg_hat = stgpkf_initialize(stgp_problem)
   # w_hat = reshape(estimator.𝐱ʰᵃᵗⱼₗᵢ[:, 1], Nx, Ny)
-  w_hats = [w_hat,]
+  w_hats = [w_hat, ]
+  stg_hats = [stg_hat, ]
 
   # check the covariances
   # print(NGPKF.KF.Σ(w_hat))
@@ -451,8 +458,11 @@ function simulate_known_param(ts, x0::XS, b0, controllers, soc_profile, w_rated_
   ergo_q_maps = [ergo_q_map,]
 
   # get a measurement
+  # measure_σ = 0.1 # m/s
   # ys = [measure(t0, x0[i], EnvDataSpatial; σ_meas=σ_meas) for i = 1:N_robots]
-  measurements = [measure(t0, x0, EnvData; σ_meas = σ_meas)...]  
+  # measurements = [measure(t0, x0, EnvData; σ_meas = σ_meas)...]  
+  measurements = [measure(EnvData, x0, EnvData.ts[1], σ_meas)...]
+  # measure_Σ = (measure_σ^2) * I(10);
 
   # Initiatize the estimate to be equal to the rated value
   Nx, Ny = length(ngpkf_grid.xs), length(ngpkf_grid.ys)
@@ -493,7 +503,8 @@ function simulate_known_param(ts, x0::XS, b0, controllers, soc_profile, w_rated_
       b = bs[end]
 
       # make a measurement from each robot
-      ys = measure(t, x, EnvData; σ_meas=σ_meas)
+      # ys = measure(t, x, EnvData; σ_meas=σ_meas)
+      ys =  measurements = [measure(EnvData, x, ts_hrs*60, σ_meas)...]
       append!(measurements, ys)
       
 

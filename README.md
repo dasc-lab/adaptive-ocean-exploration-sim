@@ -1,5 +1,14 @@
 # adaptive-ocean-exploration-sim
 
+## Dependencies
+To add `SpatiotemporalGPs.jl`, open the Julia REPL.
+```
+]
+activate .
+add https://github.com/dev10110/SpatiotemporalGPs.jl
+```
+this will install the SpatiotemporalGPs.jl package.
+
 ## Objectives:
 
 Boat is exploring the ocean, and collecting `wind_x, wind_y`, and (in the future) salinity measurements. 

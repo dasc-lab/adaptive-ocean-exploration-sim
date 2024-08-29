@@ -28,3 +28,6 @@ Manifest.toml
 
 # VSCode settings
 .vscode/
+
+# Data Files
+*.jld2

@@ -633,8 +633,8 @@ function simulate_known_param(ts, x0::XS, b0, controllers, soc_profile, w_rated_
       #   println("speed: ", speed)
       # end
       push!(xs, new_xs)
-      push!(bs, SoCController.batterymodel!(boat, dayOfYear, t/60, lat, norm(u0), b, ΔT/60))
-
+      push!(bs, SoCController.batterymodel!(boat, dayOfYear, t/60, lat, norm(u), b, ΔT/60))
+      sleep(2)
     end
 
   # catch e

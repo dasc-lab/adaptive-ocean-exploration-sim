@@ -22,28 +22,26 @@ boat = ASV_Params();
 # Environment Parameters
 dayOfYear = 288; # corresponds to October 15th
 lat = 35.45; # degrees - corresponds to Jordan Lake
-Δt = 0.1; # time step in hours
-t = 10:Δt:13;
-og_time = t;
+# Δt = 0.1; # time step in hours
+# t = 10:Δt:13;
+# og_time = t;
 # t = t .+ 12;
 # t = t .% 24; # time over a day from noon to noon
-n = length(t);
-
-# Initial Conditions
-b_0 = boat.b_max;
+# n = length(t);
 
 # Compute the lower Barrier
 
 # ============================================================
-function compute_lcbf()
+function compute_lcbf(t, Δt)
+    n = length(t);
+    og_time = t;
     ϵ₋ = zeros(n); # energy deficit
     Ps = zeros(n);
     for i = 1:n
         Ps[i] = max(0, SolarInsolation(dayOfYear, t[i], lat))*1000* boat.panel_area * boat.panel_efficiency;
         ϵ₋[i] = boat.k_h*(og_time[i] - og_time[1]) - sum(Ps[1:i]*Δt);
     end
-    
-    
+
     lcbf = zeros(n);
     
     for i = 1:n
@@ -54,7 +52,9 @@ function compute_lcbf()
     return lcbf
 end
 
-function compute_ucbf()
+function compute_ucbf(t, Δt)
+    n = length(t);
+    og_time = t;
     ϵ₊ = zeros(n); # energy surplus
     Ps = zeros(n);
     for i = 1:n
@@ -102,16 +102,12 @@ function zeropower!(boat, dayOfYear, time, lat, soc, dt)
 end
 
 
+function generate_SOC_target(lcbf, ucbf, soc_begin, soc_target, t, Δt)
+    n = length(t);
 
-
-function generate_SOC_target(lcbf, ucbf)
     # Learning gains
     k_p = -5e-5; # Learning P gain (-1e-5)
     k_d = -1e-5; # Learning D gain 5e-5 -1e-5
-
-
-    # Terminal SOC Target
-    soc_target = 1000; #Wh
 
 
     xmax = 0; # best distance travel
@@ -123,20 +119,19 @@ function generate_SOC_target(lcbf, ucbf)
     error_rate = zeros(num_iters);
     p_list[1] = 0.5; # Initial guess for p2
     p2min = 1/(3*boat.k_m*(boat.v_max^2));
-    println("p2min: ", p2min);
 
     δ = 150; # 50Wh barrier on lcbf
     lcbf_dot = diff(lcbf); # Derivative of lcbf
 
     x = zeros(n);
-    b = ones(n)*b_0;
+    b = ones(n)*soc_begin;
     v = ones(n)*boat.v_max;
     old_b = zeros(n);
 
     for day = 1:1:num_iters
         # println("xmax:$(xmax)")
         x = zeros(n);
-        b = ones(n)*b_0;
+        b = ones(n)*soc_begin;
         v = ones(n)*boat.v_max;
 
         p2 = p_list[day];
@@ -145,7 +140,7 @@ function generate_SOC_target(lcbf, ucbf)
             i = j-1;
             if i == 1 # initial conditions
                 x[i] = 0;
-                b[i] = b_0;
+                b[i] = soc_begin;
             end
 
             p2_list[i] = p2;
@@ -208,17 +203,17 @@ function generate_SOC_target(lcbf, ucbf)
 end
 
 
+function generate_vel_profile(lcbf, ucbf, b, t, Δt)
+    n = length(t);
 
-
-function generate_vel_profile(lcbf, ucbf, b)
-    # Store the target profile
     # Store the target profile
     soc_profile = b;
-    soc_kp = 0.01;
-    soc_kd = 0;
+    soc_kp = 0.01; 
+    soc_ki = 0.0001;
+    soc_kd = 0.001;
 
     # Create variables to store the ASV's state in this simulation
-    b_sim = ones(n)*b_0;
+    b_sim = ones(n);
     v_sim = ones(n)*boat.v_max;
     e_sim = zeros(n); # error profile
     δ = 150; # 50Wh barrier on lcbf
@@ -226,25 +221,24 @@ function generate_vel_profile(lcbf, ucbf, b)
     for j in 2:n
         i = j-1;
         if i == 1 # initial conditions
-            b_sim[i] = b_0;
+            b_sim[i] = 1;
         end
 
-        # Compute error between current soc and target soc
         e_sim[i] = b_sim[i] - soc_profile[i];
 
         # Compute unconstrained velocity and SOC
-        v_sim[i] += soc_kp * e_sim[i] + soc_kd * diff(e_sim)[i]; # removed negative sign from numerator to let p be positive
-        b_dot = powermodel!(boat, dayOfYear, t[i], lat, v_sim[i], b_sim[i], Δt);
-
+        global v_sim[i] = soc_kp * e_sim[i] + soc_ki * sum(e_sim) + soc_kd * diff(e_sim)[i];
+        global v_sim[i] = max(0, min(v_sim[i], boat.v_max));
+        
         # Impose Boundary Conditions
         if b_sim[i] <= lcbf[i]
-            v_sim[i] = 0;
+            global v_sim[i] = 0;
         elseif 0 < (b_sim[i] - lcbf[i]) < δ
-            v_sim[i] = (b_sim[i] - lcbf[i])/δ * v_sim[i] + (1 - (b_sim[i] - lcbf[i])/δ) * boat.v_min;
+            global v_sim[i] = (b_sim[i] - lcbf[i])/δ * v_sim[i] + (1 - (b_sim[i] - lcbf[i])/δ) * boat.v_min;
         elseif b_sim[i] >= ucbf[i]
-            v_sim[i] = boat.v_max;
+            global v_sim[i] = boat.v_max;
         elseif 0 < (ucbf[i] - b_sim[i]) < δ
-            v_sim[i] = (ucbf[i] - b_sim[i])/δ * v_sim[i] + (1 - (ucbf[i] - b_sim[i])/δ) * boat.v_max;
+            global v_sim[i] = (ucbf[i] - b_sim[i])/δ * v_sim[i] + (1 - (ucbf[i] - b_sim[i])/δ) * boat.v_max;
         end
 
         # Move boat
@@ -255,16 +249,59 @@ function generate_vel_profile(lcbf, ucbf, b)
     return v_sim
 end
 
-function generate_vel_profile()
-    lcbf = compute_lcbf() 
-    ucbf = compute_ucbf()
+function generate_vel_profile(t, Δt, soc_begin, soc_target)
+    lcbf = compute_lcbf(t, Δt) 
+    ucbf = compute_ucbf(t, Δt)
     # println("computed ucbf")
-    b = compute_SoC_target(lcbf, ucbf)
+    b = generate_SOC_target(lcbf, ucbf, soc_begin, soc_target, t, Δt)
     # println("computed b")
     v = generate_vel_profile(lcbf, ucbf, b)
     return lcbf, ucbf, b, v
 end
 
+
+"""
+Real-time PID controller for speed control.
+...
+# Arguments
+- `current_soc::Float64`: the current state of charge of the ASV.
+- `target_soc::Float64`: the goal state of charge of the ASV at the computation timestep.
+- `error_sum::Float64`: the summation of error over the mission.
+- `error::Float64`: the error from the previous computation.
+...
+"""
+function speed_controller(current_soc, target_soc, error_sum, error)
+    # PID Gains
+    kp = 0.5; 
+    ki = 0.01;
+    kd = 0.5;
+
+    # PID
+    prev_error = error;
+    error = current_soc - target_soc;
+    error_sum += error;
+    difference = error - prev_error;
+    speed = kp*error + ki*error_sum + kd*difference;
+    speed = max(0, min(speed, boat.v_max));
+
+    return speed, error_sum, error
+end
+
+# Target SOC based PID speed controller - using an error vector
+function speed_controller(current_soc, target_soc, error)
+    # PID Gains
+    kp = 0.5; 
+    ki = 0.01;
+    kd = 0.5;
+
+    # PID
+    push!(error, current_soc - target_soc);
+    difference = error[end] - error[end-1];
+    speed = kp*error[end] + ki*sum(error) + kd*difference;
+    speed = max(0, min(speed, boat.v_max));
+
+    return speed, error
+end
 
 
 end

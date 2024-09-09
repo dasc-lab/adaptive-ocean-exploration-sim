@@ -354,6 +354,7 @@ function controller_single_integrator(grid, p, traj, M; umax=1.0, do_boundary_co
      
 end
 
+
 function controller_single_integrator(grid, p, ck_minus_Mk; umax=1.0, do_boundary_correction=true)
     
     b_ergo = ergodic_descent_direction(grid, p, ck_minus_Mk)

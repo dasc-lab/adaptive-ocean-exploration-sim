@@ -272,9 +272,9 @@ Real-time PID controller for speed control.
 """
 function speed_controller(current_soc, target_soc, error_sum, error)
     # PID Gains
-    kp = 0.5; 
-    ki = 0.01;
-    kd = 0.5;
+    kp = 0.01; 
+    ki = 0.0001;
+    kd = 0.001;
 
     # PID
     prev_error = error;
@@ -290,9 +290,9 @@ end
 # Target SOC based PID speed controller - using an error vector
 function speed_controller(current_soc, target_soc, error)
     # PID Gains
-    kp = 0.5; 
-    ki = 0.01;
-    kd = 0.5;
+    kp = 0.01; 
+    ki = 0.0001;
+    kd = 0.001;
 
     # PID
     push!(error, current_soc - target_soc);

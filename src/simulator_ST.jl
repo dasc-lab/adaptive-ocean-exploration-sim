@@ -863,4 +863,202 @@ function simulate_param_est(ts, x0::XS, b0, controllers, soc_profile, w_rated_va
 
 end
 
+# Spatiotemporal Jordan Lake Simulation with known hyperparameters
+function simulate_reconstruction(ts, x0::XS, b0, controllers, soc_profile, w_rated_val, convex_polygon, stgp_problem;
+  ngpkf_grid::G,
+  EnvData,
+  σ_meas=0, 
+  σ_process=0,
+  Q_process = σ_process^2 * I,
+  fuse_measurements_every_ΔT=5.0/60,
+  recompute_controller_every_ΔT=fuse_measurements_every_ΔT) where {X<:SVector,XS<:AbstractVector{X},G<:NGPKF.NGPKFGrid}
+
+  boat = SoCController.ASV_Params();
+  dayOfYear = 288; # corresponds to October 15th
+  lat = 35.45; # degrees
+  
+  # extract info from arguments
+  t0 = ts[1]
+  xs = [x0,]
+  bs = ones(1)*b0;
+  N_robots = length(x0)
+  ΔT = Base.step(ts)
+
+  Nx, Ny= length(ngpkf_grid.xs), length(ngpkf_grid.ys) # The grid of size (64, 32)
+  ergo_grid = ErgoGrid(ngpkf_grid, (256, 256))
+
+  # setup map states
+  w_hat_ts = [t0,]
+  stg_hat_ts = [t0, ]
+  
+
+  # w_hat = NGPKF.initialize(ngpkf_grid)
+  state = stgpkf_initialize(stgp_problem)
+  # states = (typeof(state))[]
+  # w_hat = state
+  est = SpatiotemporalGPs.STGPKF.get_estimate(stgp_problem, state)
+  w_hat = reshape(est, length(EnvData.xs), length(EnvData.ys))
+  # w_hat = reshape(estimator.𝐱ʰᵃᵗⱼₗᵢ[:, 1], Nx, Ny)
+  w_hats = [w_hat, ]
+
+  # check the covariances
+  # print(NGPKF.KF.Σ(w_hat))
+  # @assert false
+
+  # clarity map
+  # q_map = NGPKF.clarity_map(ngpkf_grid, w_hat)
+  qs = SpatiotemporalGPs.STGPKF.get_estimate_clarity(stgp_problem, state)
+  q_map = reshape(qs, length(EnvData.xs), length(EnvData.ys))
+  ergo_q_map = ngpkf_to_ergo(ngpkf_grid, ergo_grid, q_map)
+  ergo_q_maps = [ergo_q_map,]
+
+  # get a measurement
+  # measure_σ = 0.1 # m/s
+  # ys = [measure(t0, x0[i], EnvDataSpatial; σ_meas=σ_meas) for i = 1:N_robots]
+  # measurements = [measure(t0, x0, EnvData; σ_meas = σ_meas)...]  
+  measurements = [measure(EnvData, x0[1]..., EnvData.ts[1], σ_meas)...]
+  # measure_Σ = (measure_σ^2) * I(10);
+
+  # Initiatize the estimate to be equal to the rated value
+  Nx, Ny = length(ngpkf_grid.xs), length(ngpkf_grid.ys)
+  M = ones(Nx, Ny)
+  M *= w_rated_val
+
+  # Call the real-time speed controller
+  error = 0.0;
+  error_sum = 0.0;
+  speed, error_sum, error = SoCController.speed_controller(b0, soc_profile[1], error_sum, error);
+
+  speeds = [speed];
+
+  # decide the control input for the first step
+  u0, q_target = controllers(t0, x0, M, w_rated_val,convex_polygon;
+    ngpkf_grid=ngpkf_grid,
+    ergo_grid=ergo_grid,
+    ergo_q_map=ergo_q_maps[end],
+    traj=vcat(xs...),
+    umax=speed,
+    ΔT=ΔT,
+  )
+  us = [u0,]
+
+  # update ASV state of charge
+  push!(bs, SoCController.batterymodel!(boat, dayOfYear, t0/60, lat, norm(u0), b0, ΔT/60))
+
+  q_target_maps = [q_target,]
+
+  last_measurement_fuse_time = t0
+  last_measurement_fuse_index = 0
+
+  last_control_update_time = t0
+  # try
+    @progress for (it, t) in enumerate(ts[1:(end-1)])
+
+      if (t - last_measurement_fuse_time) >= fuse_measurements_every_ΔT
+
+        measurement_pos = vec([@SVector[xs[i][1][1],xs[i][1][2]] for i in last_measurement_fuse_index+1:length(xs)])
+        measurements_w = measurements[(last_measurement_fuse_index+1):end]
+        measure_Σ = (σ_meas^2) * I(length(measurements_w));
+
+
+        # run the fusion
+        # do the KF correction
+        state_correction = stgpkf_correct(stgp_problem, state, measurement_pos, measurements_w, measure_Σ)
+        # push!(states, state_correction)
+        state = stgpkf_predict(stgp_problem, state_correction)
+        # w_hat_new = NGPKF.correct(ngpkf_grid, w_hat, measurement_pos, measurements_w; σ_meas=σ_meas)
+        
+        # STGPKF.update_and_predict!(estimator_1, key_parameters_1, yᵢ, 𝐬ᵢᵗⁱˡᵈᵉ)
+        
+        est = SpatiotemporalGPs.STGPKF.get_estimate(stgp_problem, state)
+        w_hat_new = reshape(est, length(EnvData.xs), length(EnvData.ys))
+
+        # save the new maps
+        push!(w_hat_ts, t)
+        push!(w_hats, w_hat_new)
+
+        # update the clarity map
+        # q_map = NGPKF.clarity_map(ngpkf_grid, w_hat_new)
+        # ergo_q_map = ngpkf_to_ergo(ngpkf_grid, ergo_grid, q_map)
+        qs = SpatiotemporalGPs.STGPKF.get_estimate_clarity(stgp_problem, state)
+        q_map = reshape(qs, length(EnvData.xs), length(EnvData.ys))
+        ergo_q_map = ngpkf_to_ergo(ngpkf_grid, ergo_grid, q_map)
+        push!(ergo_q_maps, ergo_q_map)
+
+        last_measurement_fuse_time = t
+        last_measurement_fuse_index = length(measurements)
+      end
+      
+      x = xs[end]
+      b = bs[end]
+
+      # make a measurement from each robot
+      # ys = measure(t, x, EnvData; σ_meas=σ_meas)
+      # ys =  [measure(EnvData, x..., ts_hrs*60, σ_meas)...]
+      # ys = [measure(EnvData, x[end]..., EnvData.ts[1], σ_meas)...]
+      ys = [measure(EnvData, x[end]..., EnvData.ts[it], σ_meas)...]
+      append!(measurements, ys)
+
+
+      # if (t - last_control_update_time >= recompute_controller_every_ΔT)
+      #   # chose a control action
+
+        traj = vcat(xs...)
+
+        # M = reshape(KF.μ(w_hats[end]), Nx, Ny)
+        M = w_hats[end]
+
+        speed, error_sum, error = SoCController.speed_controller(b, soc_profile[it], error_sum, error);
+        push!(speeds, speed);
+        
+        u, q_target = controllers(t, x, M, w_rated_val,convex_polygon;
+          ngpkf_grid=ngpkf_grid,
+          ergo_grid=ergo_grid,
+          ergo_q_map=ergo_q_maps[end], # current clarity
+          traj=traj,  # list of all points visited by all agents
+          umax=speed,
+          ΔT=ΔT,
+        )
+        
+        push!(q_target_maps, q_target)
+        # Debug 01
+        # if isnan(x[1])
+        #   println("current state: $(x)")
+        # end
+
+        # if any(isnan.(u[1]))
+        #   println("u: ", u[end])
+        #   println("New state: $(xs[end])")
+        #   u[end] = [sign(0.7 - xs[end][1][1])*0.1,sign(3.25 - xs[end][1][2])*0.1]
+        # end
+
+
+        push!(us, u)
+
+      #   last_control_update_time = t
+
+      # end
+
+      # update 
+      u = us[end] # use the last control input
+      new_xs = step(t, xs[end], u, ΔT)
+
+    
+      # if any(isnan.(new_xs[1]))
+      #   println("New state: $(new_xs)")
+      #   println("u: ", u)
+      #   println("speed: ", speed)
+      # end
+      push!(xs, new_xs)
+      push!(bs, SoCController.batterymodel!(boat, dayOfYear, t/60, lat, norm(u), b, ΔT/60))
+    end
+
+  # catch e
+    # println(e)
+  # end
+
+  return SimResultWeightedSpeed(ts, xs, us, speeds, bs, measurements, w_hat_ts, w_hats, ergo_q_maps, q_target_maps)
+
+end
+
 end

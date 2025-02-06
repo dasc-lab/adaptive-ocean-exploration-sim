@@ -447,7 +447,7 @@ function simulate_known_param(ts, x0::XS, b0, controllers, soc_profile, w_rated_
   ΔT = Base.step(ts)
 
   Nx, Ny= length(ngpkf_grid.xs), length(ngpkf_grid.ys) # The grid of size (64, 32)
-  ergo_grid = ErgoGrid(ngpkf_grid, (256, 256))
+  ergo_grid = ErgoGrid(ngpkf_grid, (15, 66))
 
   # setup map states
   w_hat_ts = [t0,]
@@ -1082,7 +1082,7 @@ function simulate_transect(ts, x0::XS, b0, controllers, soc_profile, w_rated_val
   ΔT = Base.step(ts)
 
   Nx, Ny= length(ngpkf_grid.xs), length(ngpkf_grid.ys) # The grid of size (64, 32)
-  ergo_grid = ErgoGrid(ngpkf_grid, (256, 256))
+  ergo_grid = ErgoGrid(ngpkf_grid, (15, 66))
 
   # setup map states
   w_hat_ts = [t0,]

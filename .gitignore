@@ -31,4 +31,4 @@ Manifest.toml
 
 # Data Files
 *.jld2
-*.csv
+# *.csv

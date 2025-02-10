@@ -446,8 +446,9 @@ function simulate_known_param(ts, x0::XS, b0, controllers, soc_profile, w_rated_
   N_robots = length(x0)
   ΔT = Base.step(ts)
 
-  Nx, Ny= length(ngpkf_grid.xs), length(ngpkf_grid.ys) # The grid of size (64, 32)
-  ergo_grid = ErgoGrid(ngpkf_grid, (15, 66))
+  Nx, Ny= length(ngpkf_grid.xs), length(ngpkf_grid.ys) 
+  ergo_grid = ErgoGrid(ngpkf_grid, (length(EnvData.xs), length(EnvData.ys)))
+
 
   # setup map states
   w_hat_ts = [t0,]
@@ -596,6 +597,7 @@ function simulate_known_param(ts, x0::XS, b0, controllers, soc_profile, w_rated_
 
 
         push!(us, u)
+
 
       #   last_control_update_time = t
 
@@ -1064,6 +1066,7 @@ end
 function simulate_transect(ts, x0::XS, b0, controllers, soc_profile, w_rated_val, convex_polygon, stgp_problem;
   ngpkf_grid::G,
   EnvData,
+  transect_pts,
   σ_meas=0, 
   σ_process=0,
   Q_process = σ_process^2 * I,
@@ -1081,8 +1084,8 @@ function simulate_transect(ts, x0::XS, b0, controllers, soc_profile, w_rated_val
   N_robots = length(x0)
   ΔT = Base.step(ts)
 
-  Nx, Ny= length(ngpkf_grid.xs), length(ngpkf_grid.ys) # The grid of size (64, 32)
-  ergo_grid = ErgoGrid(ngpkf_grid, (15, 66))
+  Nx, Ny= length(ngpkf_grid.xs), length(ngpkf_grid.ys) 
+  ergo_grid = ErgoGrid(ngpkf_grid, (length(EnvData.xs), length(EnvData.ys)))
 
   # setup map states
   w_hat_ts = [t0,]
@@ -1128,15 +1131,21 @@ function simulate_transect(ts, x0::XS, b0, controllers, soc_profile, w_rated_val
 
   speeds = [speed];
 
+  # Initialize waypoint index
+  waypoint_idx = 1
+
   # decide the control input for the first step
-  u0, q_target = controllers(t0, x0, M, w_rated_val,convex_polygon;
+  u0, q_target, waypoint_idx = controllers(t0, x0, M, w_rated_val,convex_polygon;
     ngpkf_grid=ngpkf_grid,
     ergo_grid=ergo_grid,
     ergo_q_map=ergo_q_maps[end],
     traj=vcat(xs...),
+    transect_pts=transect_pts,
+    waypoint_idx=waypoint_idx,
     umax=speed,
     ΔT=ΔT,
   )
+
   us = [u0,]
 
   # update ASV state of charge
@@ -1208,27 +1217,19 @@ function simulate_transect(ts, x0::XS, b0, controllers, soc_profile, w_rated_val
         speed, error_sum, error = SoCController.speed_controller(b, soc_profile[it], error_sum, error);
         push!(speeds, speed);
         
-        u, q_target = controllers(t, x, M, w_rated_val,convex_polygon;
+        u, q_target, waypoint_idx = controllers(t, x, M, w_rated_val,convex_polygon;
           ngpkf_grid=ngpkf_grid,
           ergo_grid=ergo_grid,
           ergo_q_map=ergo_q_maps[end], # current clarity
           traj=traj,  # list of all points visited by all agents
+          transect_pts=transect_pts,
+          waypoint_idx=waypoint_idx,
           umax=speed,
           ΔT=ΔT,
         )
         
         push!(q_target_maps, q_target)
-        # Debug 01
-        # if isnan(x[1])
-        #   println("current state: $(x)")
-        # end
-
-        # if any(isnan.(u[1]))
-        #   println("u: ", u[end])
-        #   println("New state: $(xs[end])")
-        #   u[end] = [sign(0.7 - xs[end][1][1])*0.1,sign(3.25 - xs[end][1][2])*0.1]
-        # end
-
+      
 
         push!(us, u)
 
@@ -1240,7 +1241,6 @@ function simulate_transect(ts, x0::XS, b0, controllers, soc_profile, w_rated_val
       u = us[end] # use the last control input
       new_xs = step(t, xs[end], u, ΔT)
 
-    
       # if any(isnan.(new_xs[1]))
       #   println("New state: $(new_xs)")
       #   println("u: ", u)

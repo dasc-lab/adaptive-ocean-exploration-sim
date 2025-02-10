@@ -22,7 +22,8 @@ returns a SVector of the [wx, wy] at time t, and pos p by querying the data
 """
 
 function measure(t, p::SV, data::EDST; σ_meas=0, Q_meas=σ_meas * I) where {EDST<:EnvDataST,SV<:SVector{2}}
-  y = data(p..., t) + (σ_meas * randn(1))[1]
+  # y = data(p..., t) + (σ_meas * randn(1))[1]
+  y = data(p..., t) + (0.0 * randn(1))[1]
   return MeasurementSpatial(t, p, y)
 end
 
@@ -31,8 +32,16 @@ function measure(t, ps::VSV, data::EDST; σ_meas=0, Q_meas = σ_meas * I) where 
 
 end
 
-function measure(data, x, y, t, σ_m=0.1)
+# function measure(data, x, y, t, σ_m=0.1)
+#   return data.itp(x, y, t) + σ_m *randn()
+# end
+
+function measure(data, x, y, t, σ_m=0.0)
   return data.itp(x, y, t) + σ_m *randn()
+end
+
+function measure_reconstruction(data, t_idx)
+  return data[t_idx]
 end
 
 
@@ -479,7 +488,12 @@ function simulate_known_param(ts, x0::XS, b0, controllers, soc_profile, w_rated_
   # measure_σ = 0.1 # m/s
   # ys = [measure(t0, x0[i], EnvDataSpatial; σ_meas=σ_meas) for i = 1:N_robots]
   # measurements = [measure(t0, x0, EnvData; σ_meas = σ_meas)...]  
-  measurements = [measure(EnvData, x0[1]..., EnvData.ts[1], σ_meas)...]
+  # measurements = [measure(EnvData, x0[1]..., EnvData.ts[1], σ_meas)...]
+
+  LookUpData = EnvData.data[1,1,:]
+  # println("EnvData: ", EnvData)
+  measurements = [measure_reconstruction(LookUpData, 1)...]
+
   # measure_Σ = (measure_σ^2) * I(10);
 
   # Initiatize the estimate to be equal to the rated value
@@ -559,9 +573,9 @@ function simulate_known_param(ts, x0::XS, b0, controllers, soc_profile, w_rated_
       # ys = measure(t, x, EnvData; σ_meas=σ_meas)
       # ys =  [measure(EnvData, x..., ts_hrs*60, σ_meas)...]
       # ys = [measure(EnvData, x[end]..., EnvData.ts[1], σ_meas)...]
-      ys = [measure(EnvData, x[end]..., EnvData.ts[it], σ_meas)...]
+      # ys = [measure(EnvData, x[end]..., EnvData.ts[it], σ_meas)...]
+      ys = [measure_reconstruction(LookUpData, it)...]
       append!(measurements, ys)
-
 
       # if (t - last_control_update_time >= recompute_controller_every_ΔT)
       #   # chose a control action
@@ -1116,8 +1130,11 @@ function simulate_transect(ts, x0::XS, b0, controllers, soc_profile, w_rated_val
   # measure_σ = 0.1 # m/s
   # ys = [measure(t0, x0[i], EnvDataSpatial; σ_meas=σ_meas) for i = 1:N_robots]
   # measurements = [measure(t0, x0, EnvData; σ_meas = σ_meas)...]  
-  measurements = [measure(EnvData, x0[1]..., EnvData.ts[1], σ_meas)...]
+  # measurements = [measure(EnvData, x0[1]..., EnvData.ts[1], σ_meas)...]
   # measure_Σ = (measure_σ^2) * I(10);
+
+  LookUpData = EnvData.data[1,1,:]
+  measurements = [measure_reconstruction(LookUpData, 1)...]
 
   # Initiatize the estimate to be equal to the rated value
   Nx, Ny = length(ngpkf_grid.xs), length(ngpkf_grid.ys)
@@ -1202,7 +1219,10 @@ function simulate_transect(ts, x0::XS, b0, controllers, soc_profile, w_rated_val
       # ys = measure(t, x, EnvData; σ_meas=σ_meas)
       # ys =  [measure(EnvData, x..., ts_hrs*60, σ_meas)...]
       # ys = [measure(EnvData, x[end]..., EnvData.ts[1], σ_meas)...]
-      ys = [measure(EnvData, x[end]..., EnvData.ts[it], σ_meas)...]
+      # ys = [measure(EnvData, x[end]..., EnvData.ts[it], σ_meas)...]
+      # append!(measurements, ys)
+
+      ys = [measure_reconstruction(LookUpData, it)...]
       append!(measurements, ys)
 
 

@@ -775,20 +775,10 @@ function simulate_reconstruction(ts, x0::XS, b0, controllers, soc_profile, w_rat
           umax=speed,
           ΔT=ΔT,
         )
+
+        u = normalize(u) * speed
         
         push!(q_target_maps, q_target)
-        # Debug 01
-        # if isnan(x[1])
-        #   println("current state: $(x)")
-        # end
-
-        # if any(isnan.(u[1]))
-        #   println("u: ", u[end])
-        #   println("New state: $(xs[end])")
-        #   u[end] = [sign(0.7 - xs[end][1][1])*0.1,sign(3.25 - xs[end][1][2])*0.1]
-        # end
-
-
         push!(us, u)
 
 

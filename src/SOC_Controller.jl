@@ -20,7 +20,8 @@ end
 boat = ASV_Params();
 
 # Environment Parameters
-dayOfYear = 288; # corresponds to October 15th
+# dayOfYear = 288; # corresponds to October 15th
+dayOfYear = 91; # corresponds to April 1
 lat = 35.45; # degrees - corresponds to Jordan Lake
 # Δt = 0.1; # time step in hours
 # t = 10:Δt:13;
@@ -195,7 +196,7 @@ function generate_SOC_target(lcbf, ucbf, soc_begin, soc_target, t, Δt)
             pstar = p2;
         end
 
-        if abs(b[end] - soc_target) < 500
+        if abs(b[end] - soc_target) < 50
             break;
         end
     end

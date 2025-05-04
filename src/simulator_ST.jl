@@ -598,7 +598,7 @@ function simulate_known_param(ts, x0::XS, b0, controllers, soc_profile, w_rated_
 
       # update 
       u = us[end] # use the last control input
-      new_xs = step(t, xs[end], u, ΔT)
+      new_xs = step(t, xs[end], u, ΔT/60)
 
     
       if any(isnan.(new_xs[1]))
@@ -1230,7 +1230,7 @@ function simulate_transect(ts, x0::XS, b0, controllers, soc_profile, w_rated_val
 
       # update 
       u = us[end] # use the last control input
-      new_xs = step(t, xs[end], u, ΔT)
+      new_xs = step(t, xs[end], u, ΔT/60)
 
       # if any(isnan.(new_xs[1]))
       #   println("New state: $(new_xs)")
@@ -1412,7 +1412,7 @@ function simulate_known_transect(ts, x0::XS, b0, controllers, soc_profile, w_rat
 
       # update 
       u = us[end] # use the last control input
-      new_xs = step(t, xs[end], u, ΔT)
+      new_xs = step(t, xs[end], u, ΔT/60)
 
       if any(isnan.(new_xs[1]))
         println("New state: $(new_xs)")

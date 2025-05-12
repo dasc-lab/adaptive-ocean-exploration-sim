@@ -32,7 +32,3 @@ Manifest.toml
 # Data Files
 *.jld2
 # *.csv
-
-
-# Results/Images
-notebooks/stationary_results/

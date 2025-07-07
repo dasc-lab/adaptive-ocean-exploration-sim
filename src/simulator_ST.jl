@@ -159,6 +159,116 @@ end
 # Simulate pre-recorded trajectory 
 
 
+
+### ALTERNATE CLARITY FORMULATION
+
+C = 1
+R = 0.5
+Q = 0
+
+clarity_with_decay(q, Q) = (C^2 / R) * (1-q)^2 - Q * q^2
+clarity_only_decay(q, Q) = - Q * q^2
+
+"""
+rk4 dynamics for clarity with decay
+"""
+ function clarity_dynamics_rk4_decay(q,h,Q; fn::Function = clarity_with_decay)
+    f1 = fn(q, Q)
+    f2 = fn(q + 0.5*h*f1, Q)
+    f3 = fn(q + 0.5*h*f2, Q)
+    f4 = fn(q + h*f3, Q)
+    qn = q + (h/6.0)*(f1 + 2*f2 + 2*f3 + f4)
+    return qn
+end
+
+"""
+clarity update function
+"""
+function update_clarity_decay_from_trajectories(grid, ϕ_curr, trajs, Q_mat, EnvData;
+    footprint_cells=1, h=0.05)
+
+    nx = length(EnvData.xs)
+    ny = length(EnvData.ys)
+
+    ϕ_new = copy(ϕ_curr)
+
+    N_robots = 1
+    N_steps = length(trajs)  # Assuming same trajectory length for all
+
+    @assert length(ϕ_curr) == nx*ny "ϕ_curr must be 1D with length nx*ny"
+    @assert size(Q_mat) == size(ϕ_curr) "Q matrix must have the same size as clarity map"
+
+    for k in 1:N_steps
+      current_x = trajs[k][1];
+      current_y = trajs[k][2];
+
+      # Create sensed mask in 2D
+      sensed_mask = falses(nx, ny)
+
+      # Find indices
+      xi = findmin(abs.(EnvData.xs .- current_x))[2]
+      yi = findmin(abs.(EnvData.ys .- current_y))[2]
+
+      row_range = max(1, xi - footprint_cells):min(nx, xi + footprint_cells)
+      col_range = max(1, yi - footprint_cells):min(ny, yi + footprint_cells)
+
+      for i in row_range, j in col_range
+          sensed_mask[i, j] = true
+      end
+
+      # Update clarity
+      for j in 1:ny, i in 1:nx
+        idx = i + (j-1)*nx
+        local_Q = Q_mat[i,j]
+
+        if sensed_mask[i,j]
+          ϕ_new[idx] = clarity_dynamics_rk4_decay(ϕ_new[idx], h, local_Q; fn=clarity_with_decay)
+        else
+          ϕ_new[idx] = clarity_dynamics_rk4_decay(ϕ_new[idx], h, local_Q; fn=clarity_only_decay)
+        end
+      end
+
+    end
+
+    
+
+    # for k in 1:N_steps
+    #     xds_k = [trajs[i][k] for i in 1:N_robots]  # all robot positions at time k
+
+    #     # Create sensed mask
+    #     sensed_mask = falses(size(ϕ_new))
+
+    #     # Mark the sensed cells
+    #     for x_pos in xds_k
+    #         x, y = x_pos
+
+    #         ϕ_xi = ceil(Int, (x - grid.o[1]) / grid.dx[1])
+    #         ϕ_yi = ceil(Int, (y - grid.o[2]) / grid.dx[2])
+
+    #         row_range = max(1, ϕ_yi - footprint_cells):min(size(ϕ_new,1), ϕ_yi + footprint_cells)
+    #         col_range = max(1, ϕ_xi - footprint_cells):min(size(ϕ_new,2), ϕ_xi + footprint_cells)
+
+    #         for i in row_range, j in col_range
+    #             sensed_mask[i,j] = true
+    #         end
+    #     end
+
+    #     # Update clarity
+    #     for i in 1:size(ϕ_new,1), j in 1:size(ϕ_new,2)
+    #         local_Q = Q_mat[i,j]
+    #         if sensed_mask[i,j]
+    #             ϕ_new[i,j] = clarity_dynamics_rk4_decay(ϕ_new[i,j], h, local_Q; fn=clarity_with_decay)
+    #         else
+    #             ϕ_new[i,j] = clarity_dynamics_rk4_decay(ϕ_new[i,j], h, local_Q; fn=clarity_only_decay)
+    #         end
+    #     end
+    # end
+
+    return ϕ_new
+end
+### END ALTERNATE CLARITY FORMULATION
+
+
 # Simulate Spatial only 
 function simulate_spatial(ts, x0::XS, controllers;
     ngpkf_grid::G,
@@ -1549,6 +1659,369 @@ function simulate_known_transect(ts, x0::XS, b0, controllers, soc_profile, w_rat
         # q_map = NGPKF.clarity_map(ngpkf_grid, w_hat_new)
         # ergo_q_map = ngpkf_to_ergo(ngpkf_grid, ergo_grid, q_map)
         qs = SpatiotemporalGPs.STGPKF.get_estimate_clarity(stgp_problem, state)
+        q_map = reshape(qs, length(EnvData.xs), length(EnvData.ys))
+        ergo_q_map = ngpkf_to_ergo(ngpkf_grid, ergo_grid, q_map)
+        push!(ergo_q_maps, ergo_q_map)
+
+        last_measurement_fuse_time = t
+        last_measurement_fuse_index = length(measurements)
+      end
+      
+      x = xs[end]
+      b = bs[end]
+
+      # make a measurement from each robot
+      ys = [measure(EnvData, x[end]..., EnvData.ts[it], σ_meas)...]
+      append!(measurements, ys)
+
+
+      # if (t - last_control_update_time >= recompute_controller_every_ΔT)
+      #   # chose a control action
+
+        traj = vcat(xs...)
+
+        # M = reshape(KF.μ(w_hats[end]), Nx, Ny)
+        M = w_hats[end]
+
+        speed, error_sum, error = SoCController.speed_controller(b, soc_profile[it], error_sum, error);
+        push!(speeds, speed);
+        
+        u, q_target, waypoint_idx = controllers(t, x, M, w_rated_val,convex_polygon;
+          ngpkf_grid=ngpkf_grid,
+          ergo_grid=ergo_grid,
+          ergo_q_map=ergo_q_maps[end], # current clarity
+          traj=traj,  # list of all points visited by all agents
+          transect_pts=transect_pts,
+          waypoint_idx=waypoint_idx,
+          umax=speed,
+          ΔT=ΔT,
+        )
+        
+        push!(q_target_maps, q_target)
+        push!(us, u)
+
+      # update 
+      u = us[end] # use the last control input
+      new_xs = step(t, xs[end], u, ΔT/60)
+
+      if any(isnan.(new_xs[1]))
+        println("New state: $(new_xs)")
+        println("u: ", u)
+        println("speed: ", speed)
+      end
+      push!(xs, new_xs)
+      push!(bs, SoCController.batterymodel!(boat, dayOfYear, t/60, lat, norm(u), b, ΔT/60))
+    end
+
+  return SimResultWeightedSpeed(ts, xs, us, speeds, bs, measurements, w_hat_ts, w_hats, ergo_q_maps, q_target_maps)
+
+end
+
+# Spatiotemporal Jordan Lake Simulation with known hyperparameters using 
+function simulate_nongp_ergo(ts, x0::XS, b0, controllers, soc_profile, w_rated_val, convex_polygon, stgp_problem;
+  ngpkf_grid::G,
+  EnvData,
+  σ_meas=0, 
+  σ_process=0,
+  Q_process = σ_process^2 * I,
+  fuse_measurements_every_ΔT=5.0/60,
+  recompute_controller_every_ΔT=fuse_measurements_every_ΔT) where {X<:SVector,XS<:AbstractVector{X},G<:NGPKF.NGPKFGrid}
+
+  boat = SoCController.ASV_Params();
+  dayOfYear = 288; # corresponds to October 15th
+  lat = 35.45; # degrees
+  
+  # extract info from arguments
+  t0 = ts[1]
+  xs = [x0,]
+  bs = ones(1)*b0;
+  N_robots = length(x0)
+  ΔT = Base.step(ts)
+
+  Nx, Ny= length(ngpkf_grid.xs), length(ngpkf_grid.ys) 
+  ergo_grid = ErgoGrid(ngpkf_grid, (length(EnvData.xs), length(EnvData.ys)))
+
+
+  # setup map states
+  w_hat_ts = [t0,]
+  stg_hat_ts = [t0, ]
+  
+
+  # w_hat = NGPKF.initialize(ngpkf_grid)
+  state = stgpkf_initialize(stgp_problem)
+  # states = (typeof(state))[]
+  # w_hat = state
+  est = SpatiotemporalGPs.STGPKF.get_estimate(stgp_problem, state)
+  w_hat = reshape(est, length(EnvData.xs), length(EnvData.ys))
+  # w_hat = reshape(estimator.𝐱ʰᵃᵗⱼₗᵢ[:, 1], Nx, Ny)
+  w_hats = [w_hat, ]
+
+  # check the covariances
+  # print(NGPKF.KF.Σ(w_hat))
+  # @assert false
+
+  # clarity map
+  # q_map = NGPKF.clarity_map(ngpkf_grid, w_hat)
+  # qs = SpatiotemporalGPs.STGPKF.get_estimate_clarity(stgp_problem, state)
+  qs = zeros(length(EnvData.xs) * length(EnvData.ys))
+  q_map = reshape(qs, length(EnvData.xs), length(EnvData.ys))
+  Q_mat = zeros(length(EnvData.xs), length(EnvData.ys))
+  ergo_q_map = ngpkf_to_ergo(ngpkf_grid, ergo_grid, q_map)
+  ergo_q_maps = [ergo_q_map,]
+
+  # get a measurement
+  measurements = [measure(EnvData, x0[1]..., EnvData.ts[1], σ_meas)...]
+
+
+  # measure_Σ = (measure_σ^2) * I(10);
+
+  # Initiatize the estimate to be equal to the rated value
+  Nx, Ny = length(ngpkf_grid.xs), length(ngpkf_grid.ys)
+  M = ones(Nx, Ny)
+  M *= w_rated_val
+
+  # Call the real-time speed controller
+  error = 0.0;
+  error_sum = 0.0;
+  speed, error_sum, error = SoCController.speed_controller(b0, soc_profile[1], error_sum, error);
+
+  speeds = [speed];
+
+  # decide the control input for the first step
+  u0, q_target = controllers(t0, x0, M, w_rated_val,convex_polygon;
+    ngpkf_grid=ngpkf_grid,
+    ergo_grid=ergo_grid,
+    ergo_q_map=ergo_q_maps[end],
+    traj=vcat(xs...),
+    umax=speed,
+    ΔT=ΔT,
+  )
+  us = [u0,]
+
+  # update ASV state of charge
+  push!(bs, SoCController.batterymodel!(boat, dayOfYear, t0/60, lat, norm(u0), b0, ΔT/60))
+
+  q_target_maps = [q_target,]
+
+  last_measurement_fuse_time = t0
+  last_measurement_fuse_index = 0
+
+  last_control_update_time = t0
+  # try
+    @progress for (it, t) in enumerate(ts[1:(end-1)])
+
+      if (t - last_measurement_fuse_time) >= fuse_measurements_every_ΔT
+
+        measurement_pos = vec([@SVector[xs[i][1][1],xs[i][1][2]] for i in last_measurement_fuse_index+1:length(xs)])
+        measurements_w = measurements[(last_measurement_fuse_index+1):end]
+        measure_Σ = (σ_meas^2) * I(length(measurements_w));
+
+
+        # run the fusion
+        # do the KF correction
+        state_correction = stgpkf_correct(stgp_problem, state, measurement_pos, measurements_w, measure_Σ)
+        # push!(states, state_correction)
+        state = stgpkf_predict(stgp_problem, state_correction)
+        # w_hat_new = NGPKF.correct(ngpkf_grid, w_hat, measurement_pos, measurements_w; σ_meas=σ_meas)
+        
+        # STGPKF.update_and_predict!(estimator_1, key_parameters_1, yᵢ, 𝐬ᵢᵗⁱˡᵈᵉ)
+        
+        est = SpatiotemporalGPs.STGPKF.get_estimate(stgp_problem, state)
+        w_hat_new = reshape(est, length(EnvData.xs), length(EnvData.ys))
+
+        # save the new maps
+        push!(w_hat_ts, t)
+        push!(w_hats, w_hat_new)
+
+        # update the clarity map
+        # q_map = NGPKF.clarity_map(ngpkf_grid, w_hat_new)
+        # ergo_q_map = ngpkf_to_ergo(ngpkf_grid, ergo_grid, q_map)
+        # qs = SpatiotemporalGPs.STGPKF.get_estimate_clarity(stgp_problem, state)
+        qs = update_clarity_decay_from_trajectories(ergo_grid, ergo_q_maps[end], measurement_pos, Q_mat, EnvData)
+        q_map = reshape(qs, length(EnvData.xs), length(EnvData.ys))
+        ergo_q_map = ngpkf_to_ergo(ngpkf_grid, ergo_grid, q_map)
+        push!(ergo_q_maps, ergo_q_map)
+
+        last_measurement_fuse_time = t
+        last_measurement_fuse_index = length(measurements)
+      end
+      
+      x = xs[end]
+      b = bs[end]
+
+      # println("xs: ", xs)
+      # println("x: ", x)
+      # println("x end: ", x[end])
+
+      # make a measurement from each robot
+      ys = [measure(EnvData, x[end]..., EnvData.ts[it], σ_meas)...]
+      append!(measurements, ys)
+
+      # if (t - last_control_update_time >= recompute_controller_every_ΔT)
+      #   # chose a control action
+
+        traj = vcat(xs...)
+
+        # M = reshape(KF.μ(w_hats[end]), Nx, Ny)
+        M = w_hats[end]
+
+        speed, error_sum, error = SoCController.speed_controller(b, soc_profile[it], error_sum, error);
+        push!(speeds, speed);
+        
+        u, q_target = controllers(t, x, M, w_rated_val,convex_polygon;
+          ngpkf_grid=ngpkf_grid,
+          ergo_grid=ergo_grid,
+          ergo_q_map=ergo_q_maps[end], # current clarity
+          traj=traj,  # list of all points visited by all agents
+          umax=speed,
+          ΔT=ΔT,
+        )
+        
+        u = normalize(u) * speed
+
+        push!(q_target_maps, q_target)
+        push!(us, u)
+
+      # update 
+      u = us[end] # use the last control input
+      new_xs = step(t, xs[end], u, ΔT/60)
+
+    
+      if any(isnan.(new_xs[1]))
+        println("New state: $(new_xs)")
+        println("u: ", u)
+        println("speed: ", speed)
+      end
+      push!(xs, new_xs)
+      push!(bs, SoCController.batterymodel!(boat, dayOfYear, t/60, lat, norm(u), b, ΔT/60))
+    end
+  return SimResultWeightedSpeed(ts, xs, us, speeds, bs, measurements, w_hat_ts, w_hats, ergo_q_maps, q_target_maps)
+
+end
+
+function simulate_nongp_transect(ts, x0::XS, b0, controllers, soc_profile, w_rated_val, convex_polygon, stgp_problem;
+  ngpkf_grid::G,
+  EnvData,
+  transect_pts,
+  σ_meas=0, 
+  σ_process=0,
+  Q_process = σ_process^2 * I,
+  fuse_measurements_every_ΔT=5.0/60,
+  recompute_controller_every_ΔT=fuse_measurements_every_ΔT) where {X<:SVector,XS<:AbstractVector{X},G<:NGPKF.NGPKFGrid}
+
+  boat = SoCController.ASV_Params();
+  dayOfYear = 288; # corresponds to October 15th
+  lat = 35.45; # degrees
+  
+  # extract info from arguments
+  t0 = ts[1]
+  xs = [x0,]
+  bs = ones(1)*b0;
+  N_robots = length(x0)
+  ΔT = Base.step(ts)
+
+  Nx, Ny= length(ngpkf_grid.xs), length(ngpkf_grid.ys) 
+  ergo_grid = ErgoGrid(ngpkf_grid, (length(EnvData.xs), length(EnvData.ys)))
+
+  # setup map states
+  w_hat_ts = [t0,]
+  stg_hat_ts = [t0, ]
+  
+
+  # w_hat = NGPKF.initialize(ngpkf_grid)
+  state = stgpkf_initialize(stgp_problem)
+  # states = (typeof(state))[]
+  # w_hat = state
+  est = SpatiotemporalGPs.STGPKF.get_estimate(stgp_problem, state)
+  w_hat = reshape(est, length(EnvData.xs), length(EnvData.ys))
+  # w_hat = reshape(estimator.𝐱ʰᵃᵗⱼₗᵢ[:, 1], Nx, Ny)
+  w_hats = [w_hat, ]
+
+  # check the covariances
+  # print(NGPKF.KF.Σ(w_hat))
+  # @assert false
+
+  # clarity map
+  # q_map = NGPKF.clarity_map(ngpkf_grid, w_hat)
+  # qs = SpatiotemporalGPs.STGPKF.get_estimate_clarity(stgp_problem, state)
+  qs = zeros(length(EnvData.xs) * length(EnvData.ys))
+  q_map = reshape(qs, length(EnvData.xs), length(EnvData.ys))
+  Q_mat = zeros(length(EnvData.xs), length(EnvData.ys))
+  ergo_q_map = ngpkf_to_ergo(ngpkf_grid, ergo_grid, q_map)
+  ergo_q_maps = [ergo_q_map,]
+
+  # get a measurement
+  measurements = [measure(EnvData, x0[1]..., EnvData.ts[1], σ_meas)...]
+
+  # Initiatize the estimate to be equal to the rated value
+  Nx, Ny = length(ngpkf_grid.xs), length(ngpkf_grid.ys)
+  M = ones(Nx, Ny)
+  M *= w_rated_val
+
+  # Call the real-time speed controller
+  error = 0.0;
+  error_sum = 0.0;
+  speed, error_sum, error = SoCController.speed_controller(b0, soc_profile[1], error_sum, error);
+
+  speeds = [speed];
+
+  # Initialize waypoint index
+  waypoint_idx = 1
+
+  # decide the control input for the first step
+  u0, q_target, waypoint_idx = controllers(t0, x0, M, w_rated_val,convex_polygon;
+    ngpkf_grid=ngpkf_grid,
+    ergo_grid=ergo_grid,
+    ergo_q_map=ergo_q_maps[end],
+    traj=vcat(xs...),
+    transect_pts=transect_pts,
+    waypoint_idx=waypoint_idx,
+    umax=speed,
+    ΔT=ΔT,
+  )
+
+  us = [u0,]
+
+  # update ASV state of charge
+  push!(bs, SoCController.batterymodel!(boat, dayOfYear, t0/60, lat, norm(u0), b0, ΔT/60))
+
+  q_target_maps = [q_target,]
+
+  last_measurement_fuse_time = t0
+  last_measurement_fuse_index = 0
+
+  last_control_update_time = t0
+  # try
+    @progress for (it, t) in enumerate(ts[1:(end-1)])
+
+      if (t - last_measurement_fuse_time) >= fuse_measurements_every_ΔT
+
+        measurement_pos = vec([@SVector[xs[i][1][1],xs[i][1][2]] for i in last_measurement_fuse_index+1:length(xs)])
+        measurements_w = measurements[(last_measurement_fuse_index+1):end]
+        measure_Σ = (σ_meas^2) * I(length(measurements_w));
+
+
+        # run the fusion
+        # do the KF correction
+        state_correction = stgpkf_correct(stgp_problem, state, measurement_pos, measurements_w, measure_Σ)
+        # push!(states, state_correction)
+        state = stgpkf_predict(stgp_problem, state_correction)
+        # w_hat_new = NGPKF.correct(ngpkf_grid, w_hat, measurement_pos, measurements_w; σ_meas=σ_meas)
+        
+        # STGPKF.update_and_predict!(estimator_1, key_parameters_1, yᵢ, 𝐬ᵢᵗⁱˡᵈᵉ)
+        
+        est = SpatiotemporalGPs.STGPKF.get_estimate(stgp_problem, state)
+        w_hat_new = reshape(est, length(EnvData.xs), length(EnvData.ys))
+
+        # save the new maps
+        push!(w_hat_ts, t)
+        push!(w_hats, w_hat_new)
+
+        # update the clarity map
+        # q_map = NGPKF.clarity_map(ngpkf_grid, w_hat_new)
+        # ergo_q_map = ngpkf_to_ergo(ngpkf_grid, ergo_grid, q_map)
+        # qs = SpatiotemporalGPs.STGPKF.get_estimate_clarity(stgp_problem, state)
+        qs = update_clarity_decay_from_trajectories(ergo_grid, ergo_q_maps[end], measurement_pos, Q_mat, EnvData)
         q_map = reshape(qs, length(EnvData.xs), length(EnvData.ys))
         ergo_q_map = ngpkf_to_ergo(ngpkf_grid, ergo_grid, q_map)
         push!(ergo_q_maps, ergo_q_map)

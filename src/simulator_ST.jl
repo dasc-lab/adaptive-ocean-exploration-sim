@@ -1891,6 +1891,9 @@ function simulate_nongp_ergo(ts, x0::XS, b0, controllers, soc_profile, w_rated_v
         println("New state: $(new_xs)")
         println("u: ", u)
         println("speed: ", speed)
+
+        println("old state: ", xs[end])
+        new_xs = xs[end] # revert to the previous state
       end
       push!(xs, new_xs)
       push!(bs, SoCController.batterymodel!(boat, dayOfYear, t/60, lat, norm(u), b, ΔT/60))

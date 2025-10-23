@@ -200,7 +200,10 @@ function generate_SOC_target(lcbf, ucbf, soc_begin, soc_target, t, Δt)
             break;
         end
     end
-    return b
+
+    v_opt = sqrt(1/(3 * pstar * boat.k_m));
+    
+    return b, v_opt
 end
 
 
@@ -262,7 +265,7 @@ end
 
 
 """
-Real-time PID controller for speed control.
+Real-time PID controller for speed control with integral anti-windup.
 ...
 # Arguments
 - `current_soc::Float64`: the current state of charge of the ASV.
@@ -271,25 +274,31 @@ Real-time PID controller for speed control.
 - `error::Float64`: the error from the previous computation.
 ...
 """
-function speed_controller(current_soc, target_soc, error_sum, error)
+function speed_controller(current_soc, target_soc, error_sum, error;
+                          integral_min=-25000.0, integral_max=25000.0)
     # PID Gains
-    kp = 0.01; 
-    ki = 0.0001;
-    kd = 0.001;
+    kp = 0.01
+    ki = 0.0001
+    kd = 0.001
 
-    # PID
-    prev_error = error;
-    error = current_soc - target_soc;
-    error_sum += error;
-    difference = error - prev_error;
-    speed = kp*error + ki*error_sum + kd*difference;
-    speed = max(0, min(speed, boat.v_max));
+    prev_error = error
+    error = current_soc - target_soc
+    error_sum += error
+    error_sum = clamp(error_sum, integral_min, integral_max)
+    difference = error - prev_error
+
+    # Feedforward: ensure 2.0 m/s when error terms are zero
+    feedforward = 1.0
+
+    speed = kp*error + ki*error_sum + kd*difference + feedforward
+    speed = max(0, min(speed, boat.v_max))
 
     return speed, error_sum, error
 end
 
-# Target SOC based PID speed controller - using an error vector
-function speed_controller(current_soc, target_soc, error)
+# Target SOC based PID speed controller - using an error vector, with anti-windup
+function speed_controller(current_soc, target_soc, error;
+                          integral_min=-25000.0, integral_max=25000.0)
     # PID Gains
     kp = 0.01; 
     ki = 0.0001;
@@ -297,9 +306,15 @@ function speed_controller(current_soc, target_soc, error)
 
     # PID
     push!(error, current_soc - target_soc);
+    # Anti-windup: clamp the integrator
+    integral = clamp(sum(error), integral_min, integral_max)
     difference = error[end] - error[end-1];
-    speed = kp*error[end] + ki*sum(error) + kd*difference;
-    speed = max(0, min(speed, boat.v_max));
+    
+    # Feedforward: ensure 2.0 m/s when error terms are zero
+    feedforward = 1.0
+
+    speed = kp*error + ki*error_sum + kd*difference + feedforward
+    speed = max(0, min(speed, boat.v_max))
 
     return speed, error
 end

@@ -1,0 +1,48 @@
+ERROR: LoadError: On worker 2:
+LoadError: ArgumentError: Package LazySets not found in current path.
+- Run `import Pkg; Pkg.add("LazySets")` to install the LazySets package.
+Stacktrace:
+  [1] macro expansion
+    @ ./loading.jl:2296 [inlined]
+  [2] macro expansion
+    @ ./lock.jl:273 [inlined]
+  [3] __require
+    @ ./loading.jl:2271
+  [4] #invoke_in_world#3
+    @ ./essentials.jl:1089 [inlined]
+  [5] invoke_in_world
+    @ ./essentials.jl:1086 [inlined]
+  [6] require
+    @ ./loading.jl:2260
+  [7] include
+    @ ./sysimg.jl:38
+  [8] top-level scope
+    @ ~/adaptive-ocean-exploration-sim/revision_sims/run_comparison.jl:83
+  [9] eval
+    @ ./boot.jl:430
+ [10] #invokelatest#2
+    @ ./essentials.jl:1055
+ [11] invokelatest
+    @ ./essentials.jl:1052
+ [12] #114
+    @ /sw/pkgs/lsa/julia/1.11.4/share/julia/stdlib/v1.11/Distributed/src/process_messages.jl:303
+ [13] run_work_thunk
+    @ /sw/pkgs/lsa/julia/1.11.4/share/julia/stdlib/v1.11/Distributed/src/process_messages.jl:70
+ [14] run_work_thunk
+    @ /sw/pkgs/lsa/julia/1.11.4/share/julia/stdlib/v1.11/Distributed/src/process_messages.jl:79
+ [15] #100
+    @ /sw/pkgs/lsa/julia/1.11.4/share/julia/stdlib/v1.11/Distributed/src/process_messages.jl:88
+in expression starting at /home/kmgovind/adaptive-ocean-exploration-sim/src/jordan_lake_domain.jl:1
+
+...and 4 more exceptions.
+
+Stacktrace:
+ [1] sync_end(c::Channel{Any})
+   @ Base ./task.jl:466
+ [2] macro expansion
+   @ ./task.jl:499 [inlined]
+ [3] remotecall_eval(m::Module, procs::Vector{Int64}, ex::Expr)
+   @ Distributed /sw/pkgs/lsa/julia/1.11.4/share/julia/stdlib/v1.11/Distributed/src/macros.jl:219
+ [4] top-level scope
+   @ /sw/pkgs/lsa/julia/1.11.4/share/julia/stdlib/v1.11/Distributed/src/macros.jl:203
+in expression starting at /home/kmgovind/adaptive-ocean-exploration-sim/revision_sims/run_comparison.jl:77

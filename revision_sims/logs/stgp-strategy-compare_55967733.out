@@ -1,0 +1,34 @@
+      From worker 2:	┌ Warning: Replacing docs for `Main.Variograms.hp_fit :: Tuple{Any}` in module `Main.Variograms`
+      From worker 2:	└ @ Base.Docs docs/Docs.jl:243
+      From worker 3:	┌ Warning: Replacing docs for `Main.Variograms.hp_fit :: Tuple{Any}` in module `Main.Variograms`
+      From worker 3:	└ @ Base.Docs docs/Docs.jl:243
+      From worker 5:	┌ Warning: Replacing docs for `Main.Variograms.hp_fit :: Tuple{Any}` in module `Main.Variograms`
+      From worker 5:	└ @ Base.Docs docs/Docs.jl:243
+      From worker 4:	┌ Warning: Replacing docs for `Main.Variograms.hp_fit :: Tuple{Any}` in module `Main.Variograms`
+      From worker 4:	└ @ Base.Docs docs/Docs.jl:243
+      From worker 2:	WARNING: method definition for #simulate_prerec_traj#72 at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2294 declares type variable XS but does not use it.
+      From worker 2:	WARNING: method definition for simulate_prerec_traj at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2294 declares type variable X but does not use it.
+      From worker 2:	WARNING: method definition for simulate_prerec_traj at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2294 declares type variable X but does not use it.
+      From worker 5:	WARNING: method definition for #simulate_prerec_traj#72 at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2294 declares type variable XS but does not use it.
+      From worker 5:	WARNING: method definition for simulate_prerec_traj at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2294 declares type variable X but does not use it.
+      From worker 5:	WARNING: method definition for simulate_prerec_traj at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2294 declares type variable X but does not use it.
+      From worker 4:	WARNING: method definition for #simulate_prerec_traj#72 at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2294 declares type variable XS but does not use it.
+      From worker 4:	WARNING: method definition for simulate_prerec_traj at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2294 declares type variable X but does not use it.
+      From worker 4:	WARNING: method definition for simulate_prerec_traj at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2294 declares type variable X but does not use it.
+      From worker 3:	WARNING: method definition for #simulate_prerec_traj#72 at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2294 declares type variable XS but does not use it.
+      From worker 3:	WARNING: method definition for simulate_prerec_traj at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2294 declares type variable X but does not use it.
+      From worker 3:	WARNING: method definition for simulate_prerec_traj at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2294 declares type variable X but does not use it.
+Run directory: /home/kmgovind/adaptive-ocean-exploration-sim/revision_sims/results/20260802_154042
+Strategies:    [:transect, :ergo_nonadaptive, :ergo_adaptive, :bb_ipp]
+Workers:       [2, 3, 4, 5]
+      From worker 5:	[bb_ipp] starting on worker 5 / pid 3398132
+      From worker 3:	[ergo_nonadaptive] starting on worker 3 / pid 3398130
+      From worker 2:	[transect] starting on worker 2 / pid 3398127
+      From worker 4:	[ergo_adaptive] starting on worker 4 / pid 3398131
+      From worker 4:	[ergo_adaptive] finished in 738.8s -> results/20260802_154042/ergo_adaptive.jld2
+      From worker 3:	[ergo_nonadaptive] finished in 742.4s -> results/20260802_154042/ergo_nonadaptive.jld2
+      From worker 5:	[bb_ipp] finished in 744.6s -> results/20260802_154042/bb_ipp.jld2
+      From worker 2:	[transect] finished in 745.3s -> results/20260802_154042/transect.jld2
+
+All strategies complete: [:transect, :ergo_nonadaptive, :ergo_adaptive, :bb_ipp]
+Results saved under: /home/kmgovind/adaptive-ocean-exploration-sim/revision_sims/results/20260802_154042

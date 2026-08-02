@@ -16,14 +16,14 @@ set -euo pipefail
 mkdir -p logs
 
 module purge
-module load julia/1.11.6      # adjust to whatever `module avail julia` shows on Great Lakes
+module load julia/1.11.4      # adjust to whatever `module avail julia` shows on Great Lakes
 
 # Instantiate once before first real run:
 #   julia --project=. -e 'using Pkg; Pkg.instantiate()'
 
 cd "$SLURM_SUBMIT_DIR"
 
-julia --project=. run_comparison.jl \
+julia --project run_comparison.jl \
     --nworkers 4 \
     --strategies transect,ergo_nonadaptive,ergo_adaptive,bb_ipp \
     --outdir results \

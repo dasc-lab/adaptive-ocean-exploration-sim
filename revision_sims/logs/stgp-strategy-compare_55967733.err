@@ -1,0 +1,5 @@
+WARNING: method definition for #simulate_prerec_traj#72 at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2294 declares type variable XS but does not use it.
+WARNING: method definition for simulate_prerec_traj at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2294 declares type variable X but does not use it.
+WARNING: method definition for simulate_prerec_traj at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2294 declares type variable X but does not use it.
+┌ Warning: Replacing docs for `Main.Variograms.hp_fit :: Tuple{Any}` in module `Main.Variograms`
+└ @ Base.Docs docs/Docs.jl:243

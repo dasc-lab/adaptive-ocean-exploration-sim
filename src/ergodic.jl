@@ -115,7 +115,21 @@ end
 
 function normalize!(M)
     s = sum(M)
-    M .= M / s
+    if !isfinite(s) || s == 0
+        # Degenerate case: target field has no mass anywhere (e.g. the
+        # info-gain target collapsed to ~0 everywhere because w_rated_val
+        # is far from the field's range, so every cell's target clarity
+        # already sits below the achieved clarity). Fall back to a
+        # uniform distribution instead of dividing by zero, which
+        # silently produces NaN (0.0/0.0) and corrupts everything
+        # downstream (DCT coefficients, descent direction, velocity,
+        # then the integrated ASV position -- which is what eventually
+        # throws, once a NaN position hits an Int() conversion in
+        # pos2ind on a *later* step).
+        M .= 1 / length(M)
+    else
+        M .= M / s
+    end
 end
 
 
@@ -330,7 +344,7 @@ function controller_single_integrator_cvx_bound(grid, p, traj, M, convex_polygon
     b_ergo = ergodic_descent_direction(grid, p, traj, M)
     # println("b_ergo: $(b_ergo)")
     # println("b_ergo: $(b_ergo)")
-    u_ergo = - umax * normalize(b_ergo)
+    u_ergo = norm(b_ergo) > 0 ? -umax * normalize(b_ergo) : @SVector[0.0, 0.0]
     if do_boundary_correction
         # return boundary_correction_discrete_time(grid, p, u_ergo; ΔT)
         return convex_bounary_correction(convex_polygon, p, u_ergo; speed_max = umax)

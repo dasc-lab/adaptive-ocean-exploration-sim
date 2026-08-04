@@ -157,7 +157,7 @@ end
 
     fuse_measurements_every_ΔT     = 5.0 / 60          # hours
     recompute_controller_every_ΔT  = 5.0 / (120.0*60)  # hours
-    w_rated_val = 0.75
+    w_rated_val = -3.5
     σ_meas = 0.5
     σ_t = zeros(length(xs), length(ys))
 
@@ -343,7 +343,8 @@ end
         dist::Float64
     end
 
-    function get_motion_primitives(speed, dt, M=5)
+    function get_motion_primitives(speed, dt, M=7)
+        # Ensure M is odd so dtheta = 0.0 (straight) is explicitly included
         dthetas = range(-pi/3, pi/3, length=M)
         return [MotionPrimitive(dth, speed * dt) for dth in dthetas]
     end
@@ -357,7 +358,7 @@ end
                                   xs::AbstractVector, ys::AbstractVector, convex_polygon)
         p = @SVector[x, y]
         if !(p ∈ convex_polygon.polygon)
-            return -10.0
+            return -Inf
         end
         ix = clamp(round(Int, (x - xs[1]) / (xs[2] - xs[1])) + 1, 1, size(target_grid, 1))
         iy = clamp(round(Int, (y - ys[1]) / (ys[2] - ys[1])) + 1, 1, size(target_grid, 2))
@@ -379,9 +380,17 @@ end
             new_x = x + prim.dist * cos(new_heading)
             new_y = y + prim.dist * sin(new_heading)
             
-            reward_i = bb_reward_fast(new_x, new_y, target_grid, xs, ys, convex_polygon)
-            gamma_child = gamma_parent + reward_i
+            base_reward = bb_reward_fast(new_x, new_y, target_grid, xs, ys, convex_polygon)
             
+            if isinf(base_reward) && base_reward < 0
+                continue
+            end
+
+            # FIX: Regularize turning so straight paths win when information gains are tied
+            turn_penalty = 1e-6 * abs(prim.dtheta)
+            reward_i = base_reward - turn_penalty
+
+            gamma_child = gamma_parent + reward_i
             z_path[j + 1] = i
 
             if j + 1 == H
@@ -410,16 +419,11 @@ end
     end
 end
 
-@everywhere function make_bb_ipp_controller(env; H=7, M_primitives=5, primitive_stride=130)
+@everywhere function make_bb_ipp_controller(env; H=5, M_primitives=7, primitive_stride=20)
     heading_state = Ref(0.0)
+    in_fallback_mode = Ref(false)
 
-    # umax is in m/s (matches usage elsewhere: transect_controller, ergodic
-    # controllers). Grid coordinates (xs, ys, convex_polygon) are in km.
-    # primitive_stride = number of physical sim ticks (env.Δt seconds each)
-    # a single B&B primitive represents, so the search actually resolves
-    # distinct grid cells instead of everything landing in the same cell.
-    dt_sec_per_primitive = primitive_stride * env.Δt          # seconds
-    dist_km_per_primitive = (umax_placeholder = nothing)      # set inside closure below
+    dt_sec_per_primitive = primitive_stride * env.Δt
 
     return function (t, xs, Mean, w_rated_val, convex_polygon;
             ergo_grid, ergo_q_map, traj, umax=0.15, ΔT, kwargs...)
@@ -428,10 +432,9 @@ end
             Mean, ergo_q_map, w_rated_val, convex_polygon, ergo_grid, env)
 
         L_UB = max(maximum(target_spatial_dist), 1e-6)
-
-        # umax [m/s] * dt_sec [s] = meters -> /1000 -> km, to match grid units
+        
         dist_km = umax * dt_sec_per_primitive / 1000.0
-        primitives = get_motion_primitives(1.0, dist_km, M_primitives)  # speed=1, "dt"=dist_km directly
+        primitives = get_motion_primitives(1.0, dist_km, M_primitives)
 
         grid_xs = ErgodicController.xs(ergo_grid)
         grid_ys = ErgodicController.ys(ergo_grid)
@@ -439,22 +442,42 @@ end
         u_out = Vector{SVector{2,Float64}}(undef, length(xs))
         for (k, x) in enumerate(xs)
             x_start = [x[1], x[2]]
+
+            # 1. Run Branch and Bound
             z_star, gamma_star = path_planning_bb_fast(
                 x_start, heading_state[], H, primitives, L_UB,
                 target_spatial_dist, grid_xs, grid_ys, convex_polygon
             )
 
-            if isempty(z_star) || z_star[1] == 0 || gamma_star <= -5.0
-                max_idx = argmax(target_spatial_dist)
-                target_x = grid_xs[max_idx[1]]
-                target_y = grid_ys[max_idx[2]]
-                heading_state[] = atan(target_y - x[2], target_x - x[1])
+            # 2. Path Selection & Proportional Turn
+            if isempty(z_star) || z_star[1] == 0 || isinf(gamma_star) || gamma_star <= -5.0
+                centroid = ConvexBoundAvoidance.calculate_centroid(convex_polygon)
+                step_heading = atan(centroid[2] - x[2], centroid[1] - x[1])
+                in_fallback_mode[] = true
             else
                 chosen_prim = primitives[z_star[1]]
-                heading_state[] += chosen_prim.dtheta
+                dtheta_step = chosen_prim.dtheta / primitive_stride
+                step_heading = heading_state[] + dtheta_step
+                in_fallback_mode[] = false
             end
 
-            u_out[k] = @SVector[umax * cos(heading_state[]), umax * sin(heading_state[])]
+            # 3. Velocity vector
+            u_raw = @SVector[umax * cos(step_heading), umax * sin(step_heading)]
+
+            # 4. Shore boundary correction (10m safety buffer)
+            safe_margin_km = 0.01
+            u_safe = ErgodicController.convex_bounary_correction(
+                convex_polygon, x, u_raw; speed_max=umax, min_safe_d=safe_margin_km
+            )
+
+            # 5. Heading state tracking
+            if norm(u_safe) > 1e-4
+                heading_state[] = atan(u_safe[2], u_safe[1])
+            else
+                heading_state[] = step_heading
+            end
+
+            u_out[k] = u_safe
         end
 
         return u_out, q_target_temp

@@ -12,7 +12,7 @@
 #   julia run_monte_carlo_comparison.jl --nworkers 8 --num_mc 10 --w_rated -3.5 --strategies transect,ergo_nonadaptive,ergo_adaptive,bb_ipp
 # =============================================================================
 
-using Distributed, Dates, Printf, CairoMakie
+using Distributed, Dates, Printf
 
 # Track script start time
 const SCRIPT_START_TIME = Dates.now()
@@ -192,11 +192,23 @@ end
     end
 
     function transect_controller(t, xs, Mean, w_rated_val, convex_polygon;
-            ergo_grid, ergo_q_map, traj, transect_pts, waypoint_idx, umax=0.15, ΔT, kwargs...)
+        ergo_grid, ergo_q_map, traj, transect_pts, waypoint_idx, umax=0.15, ΔT, kwargs...)
 
         current_waypoint = transect_pts[waypoint_idx]
-        u = [heading_calculator(umax, x, current_waypoint) for x in xs]
-        u = [@SVector[ux, uy] for (ux, uy) in u]
+        
+        u_out = Vector{SVector{2,Float64}}(undef, length(xs))
+        safe_margin_km = 0.015  # ~15 meters safety buffer
+
+        for (k, x) in enumerate(xs)
+            u_raw = heading_calculator(umax, x, current_waypoint)
+            u_raw_sv = @SVector[u_raw[1], u_raw[2]]
+            
+            # Enforce boundary safety on transect paths
+            u_out[k] = ErgodicController.convex_bounary_correction(
+                convex_polygon, x, u_raw_sv; speed_max=umax, min_safe_d=safe_margin_km
+            )
+        end
+
         q_target_temp = zeros(size(ergo_q_map))
 
         if norm(xs[1] - current_waypoint) < 0.1
@@ -205,7 +217,8 @@ end
                 waypoint_idx = 1
             end
         end
-        return u, q_target_temp, waypoint_idx
+        
+        return u_out, q_target_temp, waypoint_idx
     end
 
     function run_transect(env, outpath)
@@ -396,7 +409,7 @@ end
                 end
 
                 u_raw = @SVector[umax * cos(step_heading), umax * sin(step_heading)]
-                safe_margin_km = 0.01
+                safe_margin_km = 0.015
                 u_safe = ErgodicController.convex_bounary_correction(
                     convex_polygon, x, u_raw; speed_max=umax, min_safe_d=safe_margin_km
                 )
@@ -435,30 +448,56 @@ end
 
 w_rated_cmd = parse(Float64, opts["w_rated"])
 
+# =============================================================================
+# Helper Function to Compute Spatial RMSE & Clarity Deficit Over Time
+# =============================================================================
+@everywhere function compute_run_metrics(res, synthetic_data)
+    # 1. Spatial RMSE computation
+    w_hats = res.w_hats
+    N_steps = length(w_hats)
+    N_truth = size(synthetic_data.data, 3)
+    
+    step_ratio = N_steps > 1 ? (N_truth - 1) / (N_steps - 1) : 0.0
+    rmse_series = zeros(N_steps)
+    
+    for i in 1:N_steps
+        truth_idx = N_steps > 1 ? min(floor(Int, (i - 1) * step_ratio) + 1, N_truth) : 1
+        truth_map = synthetic_data.data[:, :, truth_idx]
+        rmse_series[i] = sqrt(mean((w_hats[i] .- truth_map) .^ 2))
+    end
+
+    # 2. Clarity Deficit computation (Target - Achieved, floored to zero)
+    ergo_q_maps = res.ergo_q_maps
+    q_target_maps = res.q_target_maps
+    N_q = length(ergo_q_maps)
+    
+    clarity_deficit_series = zeros(N_q)
+    for i in 1:N_q
+        target_q = q_target_maps[i]
+        achieved_q = ergo_q_maps[i]
+        deficit_map = max.(0.0, target_q .- achieved_q)
+        clarity_deficit_series[i] = mean(deficit_map)
+    end
+
+    return rmse_series, clarity_deficit_series
+end
+
 @everywhere function run_task(task_tuple)
     seed, strategy_name, outdir, w_rated_val = task_tuple
     outpath = joinpath(outdir, "trial_seed$(seed)_$(strategy_name).jld2")
     
+    env = build_environment(; seed=seed, w_rated_val=w_rated_val)
+    
     if isfile(outpath)
         res = load(outpath, "res")
-        return (seed, strategy_name, res)
+    else
+        fn = STRATEGY_FNS[strategy_name]
+        res = fn(env, outpath)
     end
 
-    env = build_environment(; seed=seed, w_rated_val=w_rated_val)
-    fn = STRATEGY_FNS[strategy_name]
-    res = fn(env, outpath)
-    return (seed, strategy_name, res)
-end
+    rmse_series, clarity_deficit_series = compute_run_metrics(res, env.synthetic_data)
 
-# Helper to safely retrieve spatial RMSE series from simulator result struct
-function extract_rmse(res)
-    for field in (:rmse, :rmses, :rmse_hist, :field_rmse)
-        if hasproperty(res, field)
-            return getproperty(res, field)
-        end
-    end
-    # Default fallback: compute zero vector if not directly present in res struct
-    return zeros(length(res.measurements))
+    return (seed, strategy_name, vec(res.measurements), rmse_series, clarity_deficit_series)
 end
 
 # =============================================================================
@@ -486,36 +525,46 @@ function main()
     results = pmap(run_task, tasks)
 
     # Organize collected outputs by strategy
-    measurements_dict = Dict(s => Float64[] for s in strategies)
-    rmse_dict         = Dict(s => Vector{Vector{Float64}}() for s in strategies)
+    measurements_dict     = Dict(s => Float64[] for s in strategies)
+    rmse_dict             = Dict(s => Vector{Vector{Float64}}() for s in strategies)
+    clarity_deficit_dict  = Dict(s => Vector{Vector{Float64}}() for s in strategies)
 
-    for (seed, strat, res) in results
-        append!(measurements_dict[strat], vec(res.measurements))
-        push!(rmse_dict[strat], extract_rmse(res))
+    for (seed, strat, meas, rmse_series, deficit_series) in results
+        append!(measurements_dict[strat], meas)
+        push!(rmse_dict[strat], rmse_series)
+        push!(clarity_deficit_dict[strat], deficit_series)
     end
 
-    # Retrieve global rated value dynamically from environment definition
     sample_env = build_environment(; seed=base_seed, w_rated_val=w_rated_cmd)
     w_rated_val = sample_env.w_rated_val
 
     # Data Structures for Storing Strategy Metrics
-    strategy_names_str = String[]
-    mean_rmse_vals     = Float64[]
-    final_rmse_vals    = Float64[]
-    mean_error_vals    = Float64[]
-    std_error_vals     = Float64[]
-    in_buffer_props    = Float64[]
+    strategy_names_str  = String[]
+    mean_rmse_vals      = Float64[]
+    final_rmse_vals     = Float64[]
+    mean_deficit_vals   = Float64[]
+    final_deficit_vals  = Float64[]
+    mean_error_vals     = Float64[]
+    std_error_vals      = Float64[]
+    in_buffer_props     = Float64[]
 
     allowable_buffer = 1.0
 
-    # 1. Compute per-strategy metrics
+    # 1. Compute per-strategy aggregated metrics
     for strat in strategies
+        # Spatial RMSE
         rmse_matrix = hcat(rmse_dict[strat]...)
         mean_rmse_series = vec(mean(rmse_matrix, dims=2))
-        
         m_rmse = mean(mean_rmse_series)
         f_rmse = mean_rmse_series[end]
 
+        # Clarity Deficit
+        deficit_matrix = hcat(clarity_deficit_dict[strat]...)
+        mean_deficit_series = vec(mean(deficit_matrix, dims=2))
+        m_deficit = mean(mean_deficit_series)
+        f_deficit = mean_deficit_series[end]
+
+        # Measurement Errors
         meas = measurements_dict[strat]
         errs = meas .- w_rated_val
         m_err = mean(errs)
@@ -525,6 +574,8 @@ function main()
         push!(strategy_names_str, string(strat))
         push!(mean_rmse_vals, m_rmse)
         push!(final_rmse_vals, f_rmse)
+        push!(mean_deficit_vals, m_deficit)
+        push!(final_deficit_vals, f_deficit)
         push!(mean_error_vals, m_err)
         push!(std_error_vals, s_err)
         push!(in_buffer_props, prop_in_range)
@@ -538,12 +589,16 @@ function main()
         println("Strategy: $(strategy_names_str[i])")
         @printf("  - Mean Spatial RMSE:       %.4f\n", mean_rmse_vals[i])
         @printf("  - Final Spatial RMSE:      %.4f\n", final_rmse_vals[i])
+        @printf("  - Mean Clarity Deficit:    %.4f\n", mean_deficit_vals[i])
+        @printf("  - Final Clarity Deficit:   %.4f\n", final_deficit_vals[i])
         @printf("  - Measurement Error Mean:  %.4f\n", mean_error_vals[i])
         @printf("  - Measurement Error Std:   %.4f\n", std_error_vals[i])
         @printf("  - In Target Range (±%.1f): %.2f%%\n\n", allowable_buffer, in_buffer_props[i] * 100)
     end
 
-    # 3. Figure & Histogram Generation
+    # 3. Figure & Histogram Generation (Load CairoMakie ONLY on Process 1)
+    using CairoMakie
+
     fig = Figure(size = (1000, 900))
 
     axs = [
@@ -595,6 +650,8 @@ function main()
             println(f, "Strategy: ", strategy_names_str[i])
             @printf(f, "  - Mean Spatial RMSE:               %.6f\n", mean_rmse_vals[i])
             @printf(f, "  - Final Spatial RMSE:              %.6f\n", final_rmse_vals[i])
+            @printf(f, "  - Mean Clarity Deficit:            %.6f\n", mean_deficit_vals[i])
+            @printf(f, "  - Final Clarity Deficit:           %.6f\n", final_deficit_vals[i])
             @printf(f, "  - Error Mean:                      %.6f\n", mean_error_vals[i])
             @printf(f, "  - Error Std Dev:                   %.6f\n", std_error_vals[i])
             @printf(f, "  - Proportion In Range (±%.1f):      %.4f (%.2f%%)\n\n", allowable_buffer, in_buffer_props[i], in_buffer_props[i] * 100)
@@ -605,12 +662,14 @@ function main()
     # 5. Save CSV Metrics Summary
     csv_report_path = joinpath(data_dir, "summary_metrics.csv")
     open(csv_report_path, "w") do f
-        println(f, "Strategy,Mean_RMSE,Final_RMSE,Error_Mean,Error_Std,Proportion_In_Target_Range")
+        println(f, "Strategy,Mean_RMSE,Final_RMSE,Mean_Clarity_Deficit,Final_Clarity_Deficit,Error_Mean,Error_Std,Proportion_In_Target_Range")
         for i in 1:length(strategies)
-            @printf(f, "%s,%.6f,%.6f,%.6f,%.6f,%.6f\n",
+            @printf(f, "%s,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
                 strategy_names_str[i],
                 mean_rmse_vals[i],
                 final_rmse_vals[i],
+                mean_deficit_vals[i],
+                final_deficit_vals[i],
                 mean_error_vals[i],
                 std_error_vals[i],
                 in_buffer_props[i]

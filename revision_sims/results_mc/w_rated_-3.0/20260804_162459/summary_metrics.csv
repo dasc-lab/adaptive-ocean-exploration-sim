@@ -1,0 +1,5 @@
+Strategy,Mean_RMSE,Final_RMSE,Error_Mean,Error_Std,Proportion_In_Target_Range
+transect,0.000000,0.000000,2.885596,1.057117,0.035663
+ergo_nonadaptive,0.000000,0.000000,3.040520,1.087617,0.021199
+ergo_adaptive,0.000000,0.000000,2.994960,1.115133,0.035779
+bb_ipp,0.000000,0.000000,2.922728,1.172983,0.039320

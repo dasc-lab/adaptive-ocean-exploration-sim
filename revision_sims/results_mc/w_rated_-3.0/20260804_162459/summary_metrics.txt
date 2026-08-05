@@ -1,0 +1,37 @@
+================================================================================
+MONTE CARLO SIMULATION SUMMARY REPORT
+================================================================================
+Execution Timestamp: 2026-08-04 16:24:59
+Total Wall Runtime:  3166.31 seconds
+Number of MC Seeds:  10 (Base Seed: 1234)
+Target Reference Value: -3.0
+================================================================================
+
+Strategy: transect
+  - Mean Spatial RMSE:               0.000000
+  - Final Spatial RMSE:              0.000000
+  - Error Mean:                      2.885596
+  - Error Std Dev:                   1.057117
+  - Proportion In Range (±1.0):      0.0357 (3.57%)
+
+Strategy: ergo_nonadaptive
+  - Mean Spatial RMSE:               0.000000
+  - Final Spatial RMSE:              0.000000
+  - Error Mean:                      3.040520
+  - Error Std Dev:                   1.087617
+  - Proportion In Range (±1.0):      0.0212 (2.12%)
+
+Strategy: ergo_adaptive
+  - Mean Spatial RMSE:               0.000000
+  - Final Spatial RMSE:              0.000000
+  - Error Mean:                      2.994960
+  - Error Std Dev:                   1.115133
+  - Proportion In Range (±1.0):      0.0358 (3.58%)
+
+Strategy: bb_ipp
+  - Mean Spatial RMSE:               0.000000
+  - Final Spatial RMSE:              0.000000
+  - Error Mean:                      2.922728
+  - Error Std Dev:                   1.172983
+  - Proportion In Range (±1.0):      0.0393 (3.93%)
+

@@ -12,7 +12,7 @@
 #   julia run_monte_carlo_comparison.jl --nworkers 8 --num_mc 10 --w_rated -3.5 --strategies transect,ergo_nonadaptive,ergo_adaptive,bb_ipp
 # =============================================================================
 
-using Distributed, Dates, Printf
+using Distributed, Dates, Printf, CairoMakie
 
 # Track script start time
 const SCRIPT_START_TIME = Dates.now()
@@ -55,7 +55,7 @@ SCRIPT_SRC_DIR = abspath(opts["srcdir"])
 # Worker Allocation
 if nprocs() == 1
     total_tasks = length(seeds) * length(strategies)
-    addprocs(min(nworkers_requested, total_tasks))
+    addprocs(min(nworkers_requested, total_tasks); exename=joinpath(Sys.BINDIR, "julia"))
 end
 
 @everywhere SRC_DIR = $SCRIPT_SRC_DIR
@@ -79,6 +79,12 @@ end
     include(joinpath(SRC_DIR, "simulator_ST.jl"))
     include(joinpath(SRC_DIR, "Convex_bound_avoidance.jl"))
     include(joinpath(SRC_DIR, "transects.jl"))
+
+    # -------------------------------------------------------------------------
+    # Patch SimulatorST.clamp_to_domain for SizedVector / generic AbstractVector
+    # -------------------------------------------------------------------------
+    SimulatorST.clamp_to_domain(pts::AbstractVector{<:AbstractVector}, xs::AbstractVector, ys::AbstractVector; kwargs...) =
+        SimulatorST.clamp_to_domain([SVector{2, Float64}(p[1], p[2]) for p in pts], xs, ys; kwargs...)
 end
 
 # =============================================================================
@@ -596,9 +602,7 @@ function main()
         @printf("  - In Target Range (±%.1f): %.2f%%\n\n", allowable_buffer, in_buffer_props[i] * 100)
     end
 
-    # 3. Figure & Histogram Generation (Load CairoMakie ONLY on Process 1)
-    using CairoMakie
-
+    # 3. Figure & Histogram Generation
     fig = Figure(size = (1000, 900))
 
     axs = [

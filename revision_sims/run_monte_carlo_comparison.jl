@@ -457,35 +457,51 @@ w_rated_cmd = parse(Float64, opts["w_rated"])
 # =============================================================================
 # Helper Function to Compute Spatial RMSE & Clarity Deficit Over Time
 # =============================================================================
-@everywhere function compute_run_metrics(res, synthetic_data)
-    # 1. Spatial RMSE computation
+@everywhere function compute_run_metrics(res, synthetic_data, w_rated_val; 
+                                        delta_target=0.5, lambda_param=0.25)
     w_hats = res.w_hats
     N_steps = length(w_hats)
     N_truth = size(synthetic_data.data, 3)
     
     step_ratio = N_steps > 1 ? (N_truth - 1) / (N_steps - 1) : 0.0
-    rmse_series = zeros(N_steps)
+    
+    rmse_global_series = zeros(N_steps)
+    rmse_target_series = zeros(N_steps)
+    wrmse_series       = zeros(N_steps)
     
     for i in 1:N_steps
         truth_idx = N_steps > 1 ? min(floor(Int, (i - 1) * step_ratio) + 1, N_truth) : 1
         truth_map = synthetic_data.data[:, :, truth_idx]
-        rmse_series[i] = sqrt(mean((w_hats[i] .- truth_map) .^ 2))
+        diff_sq   = (w_hats[i] .- truth_map) .^ 2
+
+        # 1. Global RMSE
+        rmse_global_series[i] = sqrt(mean(diff_sq))
+
+        # 2. Target-Masked RMSE (|W* - w_rated| <= delta_target)
+        target_mask = abs.(truth_map .- w_rated_val) .<= delta_target
+        if count(target_mask) > 0
+            rmse_target_series[i] = sqrt(mean(diff_sq[target_mask]))
+        else
+            rmse_target_series[i] = NaN
+        end
+
+        # 3. Ground-Truth Continuous Weighted RMSE
+        weights = exp.(-lambda_param .* ((truth_map .- w_rated_val) .^ 2))
+        wrmse_series[i] = sqrt(sum(weights .* diff_sq) / sum(weights))
     end
 
-    # 2. Clarity Deficit computation (Target - Achieved, floored to zero)
+    # Clarity Deficit computation
     ergo_q_maps = res.ergo_q_maps
     q_target_maps = res.q_target_maps
     N_q = length(ergo_q_maps)
     
     clarity_deficit_series = zeros(N_q)
     for i in 1:N_q
-        target_q = q_target_maps[i]
-        achieved_q = ergo_q_maps[i]
-        deficit_map = max.(0.0, target_q .- achieved_q)
+        deficit_map = max.(0.0, q_target_maps[i] .- ergo_q_maps[i])
         clarity_deficit_series[i] = mean(deficit_map)
     end
 
-    return rmse_series, clarity_deficit_series
+    return rmse_global_series, rmse_target_series, wrmse_series, clarity_deficit_series
 end
 
 @everywhere function run_task(task_tuple)
@@ -501,9 +517,11 @@ end
         res = fn(env, outpath)
     end
 
-    rmse_series, clarity_deficit_series = compute_run_metrics(res, env.synthetic_data)
+    rmse_global, rmse_target, wrmse, clarity_deficit = compute_run_metrics(
+        res, env.synthetic_data, w_rated_val
+    )
 
-    return (seed, strategy_name, vec(res.measurements), rmse_series, clarity_deficit_series)
+    return (seed, strategy_name, vec(res.measurements), rmse_global, rmse_target, wrmse, clarity_deficit)
 end
 
 # =============================================================================
@@ -531,38 +549,65 @@ function main()
     results = pmap(run_task, tasks)
 
     # Organize collected outputs by strategy
-    measurements_dict     = Dict(s => Float64[] for s in strategies)
-    rmse_dict             = Dict(s => Vector{Vector{Float64}}() for s in strategies)
-    clarity_deficit_dict  = Dict(s => Vector{Vector{Float64}}() for s in strategies)
+    measurements_dict    = Dict(s => Float64[] for s in strategies)
+    rmse_global_dict     = Dict(s => Vector{Vector{Float64}}() for s in strategies)
+    rmse_target_dict     = Dict(s => Vector{Vector{Float64}}() for s in strategies)
+    wrmse_dict           = Dict(s => Vector{Vector{Float64}}() for s in strategies)
+    clarity_deficit_dict = Dict(s => Vector{Vector{Float64}}() for s in strategies)
 
-    for (seed, strat, meas, rmse_series, deficit_series) in results
+    for (seed, strat, meas, rmse_g, rmse_t, wrmse, deficit) in results
         append!(measurements_dict[strat], meas)
-        push!(rmse_dict[strat], rmse_series)
-        push!(clarity_deficit_dict[strat], deficit_series)
+        push!(rmse_global_dict[strat], rmse_g)
+        push!(rmse_target_dict[strat], rmse_t)
+        push!(wrmse_dict[strat], wrmse)
+        push!(clarity_deficit_dict[strat], deficit)
     end
 
     sample_env = build_environment(; seed=base_seed, w_rated_val=w_rated_cmd)
     w_rated_val = sample_env.w_rated_val
 
-    # Data Structures for Storing Strategy Metrics
-    strategy_names_str  = String[]
-    mean_rmse_vals      = Float64[]
-    final_rmse_vals     = Float64[]
-    mean_deficit_vals   = Float64[]
-    final_deficit_vals  = Float64[]
-    mean_error_vals     = Float64[]
-    std_error_vals      = Float64[]
-    in_buffer_props     = Float64[]
-
     allowable_buffer = 1.0
+    N_mc = length(seeds)
+
+    # Storage arrays for exporting summary reports
+    strategy_names_str = String[]
+    
+    m_rmse_g_vals   = Float64[]
+    sem_rmse_g_vals = Float64[]
+    
+    m_rmse_t_vals   = Float64[]
+    sem_rmse_t_vals = Float64[]
+    
+    m_wrmse_vals    = Float64[]
+    sem_wrmse_vals  = Float64[]
+    
+    m_deficit_vals  = Float64[]
+    f_deficit_vals  = Float64[]
+    
+    m_error_vals    = Float64[]
+    std_error_vals  = Float64[]
+    in_buffer_props = Float64[]
 
     # 1. Compute per-strategy aggregated metrics
+    println("\n" * "="^80)
+    println("SUMMARY METRICS Across Monte Carlo Trials (N = $N_mc Seeds)")
+    println("="^80)
+
     for strat in strategies
-        # Spatial RMSE
-        rmse_matrix = hcat(rmse_dict[strat]...)
-        mean_rmse_series = vec(mean(rmse_matrix, dims=2))
-        m_rmse = mean(mean_rmse_series)
-        f_rmse = mean_rmse_series[end]
+        # Global RMSE (per-seed mean -> across-seeds mean & SEM)
+        seed_means_global = [mean(s) for s in rmse_global_dict[strat]]
+        m_rmse_g = mean(seed_means_global)
+        sem_rmse_g = std(seed_means_global) / sqrt(N_mc)
+
+        # Target-Masked RMSE
+        seed_means_target = [mean(filter(!isnan, s)) for s in rmse_target_dict[strat]]
+        m_rmse_t = mean(seed_means_target)
+        sem_rmse_t = std(seed_means_target) / sqrt(N_mc)
+
+        # Ground-Truth Weighted RMSE
+        seed_means_wrmse = [mean(s) for s in wrmse_dict[strat]]
+        m_wrmse = mean(seed_means_wrmse)
+        sem_wrmse = std(seed_means_wrmse) / sqrt(N_mc)
 
         # Clarity Deficit
         deficit_matrix = hcat(clarity_deficit_dict[strat]...)
@@ -570,7 +615,7 @@ function main()
         m_deficit = mean(mean_deficit_series)
         f_deficit = mean_deficit_series[end]
 
-        # Measurement Errors
+        # Measurement Errors & Target Dwell
         meas = measurements_dict[strat]
         errs = meas .- w_rated_val
         m_err = mean(errs)
@@ -578,31 +623,29 @@ function main()
         prop_in_range = count(abs.(errs) .<= allowable_buffer) / length(errs)
 
         push!(strategy_names_str, string(strat))
-        push!(mean_rmse_vals, m_rmse)
-        push!(final_rmse_vals, f_rmse)
-        push!(mean_deficit_vals, m_deficit)
-        push!(final_deficit_vals, f_deficit)
-        push!(mean_error_vals, m_err)
+        push!(m_rmse_g_vals, m_rmse_g)
+        push!(sem_rmse_g_vals, sem_rmse_g)
+        push!(m_rmse_t_vals, m_rmse_t)
+        push!(sem_rmse_t_vals, sem_rmse_t)
+        push!(m_wrmse_vals, m_wrmse)
+        push!(sem_wrmse_vals, sem_wrmse)
+        push!(m_deficit_vals, m_deficit)
+        push!(f_deficit_vals, f_deficit)
+        push!(m_error_vals, m_err)
         push!(std_error_vals, s_err)
         push!(in_buffer_props, prop_in_range)
+
+        println("Strategy: $(strat)")
+        @printf("  - Global Spatial RMSE:     %.4f ± %.4f\n", m_rmse_g, sem_rmse_g)
+        @printf("  - Target-Masked RMSE:      %.4f ± %.4f\n", m_rmse_t, sem_rmse_t)
+        @printf("  - Weighted RMSE (wRMSE):   %.4f ± %.4f\n", m_wrmse, sem_wrmse)
+        @printf("  - Mean Clarity Deficit:    %.4f\n", m_deficit)
+        @printf("  - Measurement Error Mean:  %.4f\n", m_err)
+        @printf("  - Measurement Error Std:   %.4f\n", s_err)
+        @printf("  - Target Dwell (±%.1f):     %.2f%%\n\n", allowable_buffer, prop_in_range * 100)
     end
 
-    # 2. Print Summary Metrics to Console
-    println("\n" * "="^80)
-    println("SUMMARY METRICS Across Monte Carlo Trials")
-    println("="^80)
-    for i in 1:length(strategies)
-        println("Strategy: $(strategy_names_str[i])")
-        @printf("  - Mean Spatial RMSE:       %.4f\n", mean_rmse_vals[i])
-        @printf("  - Final Spatial RMSE:      %.4f\n", final_rmse_vals[i])
-        @printf("  - Mean Clarity Deficit:    %.4f\n", mean_deficit_vals[i])
-        @printf("  - Final Clarity Deficit:   %.4f\n", final_deficit_vals[i])
-        @printf("  - Measurement Error Mean:  %.4f\n", mean_error_vals[i])
-        @printf("  - Measurement Error Std:   %.4f\n", std_error_vals[i])
-        @printf("  - In Target Range (±%.1f): %.2f%%\n\n", allowable_buffer, in_buffer_props[i] * 100)
-    end
-
-    # 3. Figure & Histogram Generation
+    # 2. Figure & Histogram Generation
     fig = Figure(size = (1000, 900))
 
     axs = [
@@ -637,7 +680,7 @@ function main()
     save(output_fig_path, fig)
     println("Histogram plot successfully saved to: $output_fig_path")
 
-    # 4. Save Text Summary Report
+    # 3. Save Text Summary Report
     wall_runtime_sec = time() - T_START_WALL
     txt_report_path = joinpath(data_dir, "summary_metrics.txt")
     open(txt_report_path, "w") do f
@@ -652,29 +695,31 @@ function main()
         println(f, "")
         for i in 1:length(strategies)
             println(f, "Strategy: ", strategy_names_str[i])
-            @printf(f, "  - Mean Spatial RMSE:               %.6f\n", mean_rmse_vals[i])
-            @printf(f, "  - Final Spatial RMSE:              %.6f\n", final_rmse_vals[i])
-            @printf(f, "  - Mean Clarity Deficit:            %.6f\n", mean_deficit_vals[i])
-            @printf(f, "  - Final Clarity Deficit:           %.6f\n", final_deficit_vals[i])
-            @printf(f, "  - Error Mean:                      %.6f\n", mean_error_vals[i])
+            @printf(f, "  - Global Spatial RMSE:             %.6f ± %.6f\n", m_rmse_g_vals[i], sem_rmse_g_vals[i])
+            @printf(f, "  - Target-Masked RMSE:              %.6f ± %.6f\n", m_rmse_t_vals[i], sem_rmse_t_vals[i])
+            @printf(f, "  - Ground-Truth Weighted RMSE:      %.6f ± %.6f\n", m_wrmse_vals[i], sem_wrmse_vals[i])
+            @printf(f, "  - Mean Clarity Deficit:            %.6f\n", m_deficit_vals[i])
+            @printf(f, "  - Final Clarity Deficit:           %.6f\n", f_deficit_vals[i])
+            @printf(f, "  - Error Mean:                      %.6f\n", m_error_vals[i])
             @printf(f, "  - Error Std Dev:                   %.6f\n", std_error_vals[i])
             @printf(f, "  - Proportion In Range (±%.1f):      %.4f (%.2f%%)\n\n", allowable_buffer, in_buffer_props[i], in_buffer_props[i] * 100)
         end
     end
     println("Summary report text saved to:         $txt_report_path")
 
-    # 5. Save CSV Metrics Summary
+    # 4. Save CSV Metrics Summary
     csv_report_path = joinpath(data_dir, "summary_metrics.csv")
     open(csv_report_path, "w") do f
-        println(f, "Strategy,Mean_RMSE,Final_RMSE,Mean_Clarity_Deficit,Final_Clarity_Deficit,Error_Mean,Error_Std,Proportion_In_Target_Range")
+        println(f, "Strategy,Global_RMSE,Global_RMSE_SEM,Target_RMSE,Target_RMSE_SEM,Weighted_RMSE,Weighted_RMSE_SEM,Mean_Clarity_Deficit,Final_Clarity_Deficit,Error_Mean,Error_Std,Proportion_In_Target_Range")
         for i in 1:length(strategies)
-            @printf(f, "%s,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
+            @printf(f, "%s,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
                 strategy_names_str[i],
-                mean_rmse_vals[i],
-                final_rmse_vals[i],
-                mean_deficit_vals[i],
-                final_deficit_vals[i],
-                mean_error_vals[i],
+                m_rmse_g_vals[i], sem_rmse_g_vals[i],
+                m_rmse_t_vals[i], sem_rmse_t_vals[i],
+                m_wrmse_vals[i], sem_wrmse_vals[i],
+                m_deficit_vals[i],
+                f_deficit_vals[i],
+                m_error_vals[i],
                 std_error_vals[i],
                 in_buffer_props[i]
             )

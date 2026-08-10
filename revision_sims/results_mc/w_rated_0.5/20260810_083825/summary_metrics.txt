@@ -1,0 +1,49 @@
+================================================================================
+MONTE CARLO SIMULATION SUMMARY REPORT
+================================================================================
+Execution Timestamp: 2026-08-10 08:38:25
+Total Wall Runtime:  3135.23 seconds
+Number of MC Seeds:  10 (Base Seed: 1234)
+Target Reference Value: 0.5
+================================================================================
+
+Strategy: transect
+  - Global Spatial RMSE:             0.929795 ± 0.045492
+  - Target-Masked RMSE:              0.666566 ± 0.044349
+  - Ground-Truth Weighted RMSE:      0.820736 ± 0.033962
+  - Mean Clarity Deficit:            0.000000
+  - Final Clarity Deficit:           0.000000
+  - Error Mean:                      -0.614404
+  - Error Std Dev:                   1.057117
+  - Proportion In Range (±1.0):      0.5716 (57.16%)
+
+Strategy: ergo_nonadaptive
+  - Global Spatial RMSE:             0.893861 ± 0.022319
+  - Target-Masked RMSE:              0.636302 ± 0.030659
+  - Ground-Truth Weighted RMSE:      0.789765 ± 0.019043
+  - Mean Clarity Deficit:            0.178688
+  - Final Clarity Deficit:           0.176277
+  - Error Mean:                      -0.459480
+  - Error Std Dev:                   1.087617
+  - Proportion In Range (±1.0):      0.5829 (58.29%)
+
+Strategy: ergo_adaptive
+  - Global Spatial RMSE:             0.861887 ± 0.020545
+  - Target-Masked RMSE:              0.676604 ± 0.026751
+  - Ground-Truth Weighted RMSE:      0.773094 ± 0.019951
+  - Mean Clarity Deficit:            0.107152
+  - Final Clarity Deficit:           0.092228
+  - Error Mean:                      -0.295816
+  - Error Std Dev:                   1.055966
+  - Proportion In Range (±1.0):      0.6488 (64.88%)
+
+Strategy: bb_ipp
+  - Global Spatial RMSE:             0.900018 ± 0.029537
+  - Target-Masked RMSE:              0.736360 ± 0.032419
+  - Ground-Truth Weighted RMSE:      0.814401 ± 0.026006
+  - Mean Clarity Deficit:            0.110292
+  - Final Clarity Deficit:           0.093920
+  - Error Mean:                      -0.290311
+  - Error Std Dev:                   0.925158
+  - Proportion In Range (±1.0):      0.7105 (71.05%)
+

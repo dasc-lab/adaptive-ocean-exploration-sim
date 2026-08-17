@@ -3,18 +3,14 @@
 # run_monte_carlo_comparison.jl
 #
 # Monte Carlo comparison of mission strategies across multiple environment seeds:
-#   1. :transect          - fixed lawnmower/TSP waypoint sweep
+#   1. :transect          - fixed lawnmower/TSP waypoint sweep with t0 target clarity
 #   2. :ergo_nonadaptive   - ergodic control, target clarity map fixed at t0
 #   3. :ergo_adaptive      - ergodic control, target clarity map recomputed every step
 #   4. :bb_ipp             - branch-and-bound IPP
-#
-# Usage:
-#   julia run_monte_carlo_comparison.jl --nworkers 8 --num_mc 10 --w_rated -3.5 --strategies transect,ergo_nonadaptive,ergo_adaptive,bb_ipp
 # =============================================================================
 
 using Distributed, Dates, Printf, CairoMakie
 
-# Track script start time
 const SCRIPT_START_TIME = Dates.now()
 const T_START_WALL = time()
 
@@ -26,7 +22,7 @@ function parse_args(args)
         "nworkers"   => string(N_STRATEGIES_DEFAULT),
         "num_mc"     => "5",
         "base_seed"  => "1234",
-        "w_rated"    => "-3.5",                                 # Rated wind speed CLI arg
+        "w_rated"    => "-3.5",
         "strategies" => "transect,ergo_nonadaptive,ergo_adaptive,bb_ipp",
         "outdir"     => "results",
         "srcdir"     => joinpath(@__DIR__, "../", "src"),
@@ -64,7 +60,6 @@ end
 # Setup Modules & Environment Code Across ALL Workers
 # =============================================================================
 @everywhere begin
-    # Packages needed on all worker nodes MUST be loaded everywhere
     using LinearAlgebra, StaticArrays, Interpolations, Statistics, Random
     using SpatiotemporalGPs, JLD2, ForwardDiff
 
@@ -80,9 +75,6 @@ end
     include(joinpath(SRC_DIR, "Convex_bound_avoidance.jl"))
     include(joinpath(SRC_DIR, "transects.jl"))
 
-    # -------------------------------------------------------------------------
-    # Patch SimulatorST.clamp_to_domain for SizedVector / generic AbstractVector
-    # -------------------------------------------------------------------------
     SimulatorST.clamp_to_domain(pts::AbstractVector{<:AbstractVector}, xs::AbstractVector, ys::AbstractVector; kwargs...) =
         SimulatorST.clamp_to_domain([SVector{2, Float64}(p[1], p[2]) for p in pts], xs, ys; kwargs...)
 end
@@ -93,11 +85,11 @@ end
 @everywhere function build_environment(; seed=1234, w_rated_val=-3.5)
     Random.seed!(seed)
 
-    Δt      = 2.5              # seconds
-    dt_min  = Δt / 60          # minutes
-    dt_hrs  = Δt / 3600        # hours
-    T_begin = 9.0               # hours
-    T_end   = 12.0              # hours
+    Δt      = 2.5
+    dt_min  = Δt / 60
+    dt_hrs  = Δt / 3600
+    T_begin = 9.0
+    T_end   = 12.0
     ts_hrs  = T_begin:dt_hrs:T_end
     ts_min  = T_begin*60:dt_min:T_end*60
 
@@ -197,39 +189,45 @@ end
         return [speed * cos(heading), speed * sin(heading)]
     end
 
-    function transect_controller(t, xs, Mean, w_rated_val, convex_polygon;
-        ergo_grid, ergo_q_map, traj, transect_pts, waypoint_idx, umax=0.15, ΔT, kwargs...)
+    function make_transect_controller(env)
+        cached_q_target_temp = Ref{Union{Nothing,Matrix{Float64}}}(nothing)
 
-        current_waypoint = transect_pts[waypoint_idx]
-        
-        u_out = Vector{SVector{2,Float64}}(undef, length(xs))
-        safe_margin_km = 0.015  # ~15 meters safety buffer
+        return function (t, xs, Mean, w_rated_val, convex_polygon;
+                ergo_grid, ergo_q_map, traj, transect_pts, waypoint_idx, umax=0.15, ΔT, kwargs...)
 
-        for (k, x) in enumerate(xs)
-            u_raw = heading_calculator(umax, x, current_waypoint)
-            u_raw_sv = @SVector[u_raw[1], u_raw[2]]
-            
-            # Enforce boundary safety on transect paths
-            u_out[k] = ErgodicController.convex_bounary_correction(
-                convex_polygon, x, u_raw_sv; speed_max=umax, min_safe_d=safe_margin_km
-            )
-        end
-
-        q_target_temp = zeros(size(ergo_q_map))
-
-        if norm(xs[1] - current_waypoint) < 0.1
-            waypoint_idx += 1
-            if waypoint_idx > length(transect_pts)
-                waypoint_idx = 1
+            if cached_q_target_temp[] === nothing
+                _, q_target_temp = compute_target_spatial_dist(
+                    Mean, ergo_q_map, w_rated_val, convex_polygon, ergo_grid, env)
+                cached_q_target_temp[] = q_target_temp
             end
+
+            current_waypoint = transect_pts[waypoint_idx]
+            u_out = Vector{SVector{2,Float64}}(undef, length(xs))
+            safe_margin_km = 0.015
+
+            for (k, x) in enumerate(xs)
+                u_raw = heading_calculator(umax, x, current_waypoint)
+                u_raw_sv = @SVector[u_raw[1], u_raw[2]]
+                u_out[k] = ErgodicController.convex_bounary_correction(
+                    convex_polygon, x, u_raw_sv; speed_max=umax, min_safe_d=safe_margin_km
+                )
+            end
+
+            if norm(xs[1] - current_waypoint) < 0.1
+                waypoint_idx += 1
+                if waypoint_idx > length(transect_pts)
+                    waypoint_idx = 1
+                end
+            end
+            
+            return u_out, cached_q_target_temp[], waypoint_idx
         end
-        
-        return u_out, q_target_temp, waypoint_idx
     end
 
     function run_transect(env, outpath)
+        controller = make_transect_controller(env)
         res = SimulatorST.simulate_known_transect(
-            env.ts_min, env.x0s, env.soc_begin, transect_controller, env.soc_target,
+            env.ts_min, env.x0s, env.soc_begin, controller, env.soc_target,
             env.w_rated_val, env.convex_polygon, env.problem;
             ngpkf_grid=env.ngpkf_grid, EnvData=env.synthetic_data,
             transect_pts=env.transect_pts, σ_meas=env.σ_meas,
@@ -457,8 +455,7 @@ w_rated_cmd = parse(Float64, opts["w_rated"])
 # =============================================================================
 # Helper Function to Compute Spatial RMSE & Clarity Deficit Over Time
 # =============================================================================
-@everywhere function compute_run_metrics(res, synthetic_data, w_rated_val; 
-                                        delta_target=0.5, lambda_param=0.25)
+@everywhere function compute_run_metrics(res, synthetic_data, w_rated_val)
     w_hats = res.w_hats
     N_steps = length(w_hats)
     N_truth = size(synthetic_data.data, 3)
@@ -466,31 +463,14 @@ w_rated_cmd = parse(Float64, opts["w_rated"])
     step_ratio = N_steps > 1 ? (N_truth - 1) / (N_steps - 1) : 0.0
     
     rmse_global_series = zeros(N_steps)
-    rmse_target_series = zeros(N_steps)
-    wrmse_series       = zeros(N_steps)
-    
     for i in 1:N_steps
         truth_idx = N_steps > 1 ? min(floor(Int, (i - 1) * step_ratio) + 1, N_truth) : 1
         truth_map = synthetic_data.data[:, :, truth_idx]
         diff_sq   = (w_hats[i] .- truth_map) .^ 2
 
-        # 1. Global RMSE
         rmse_global_series[i] = sqrt(mean(diff_sq))
-
-        # 2. Target-Masked RMSE (|W* - w_rated| <= delta_target)
-        target_mask = abs.(truth_map .- w_rated_val) .<= delta_target
-        if count(target_mask) > 0
-            rmse_target_series[i] = sqrt(mean(diff_sq[target_mask]))
-        else
-            rmse_target_series[i] = NaN
-        end
-
-        # 3. Ground-Truth Continuous Weighted RMSE
-        weights = exp.(-lambda_param .* ((truth_map .- w_rated_val) .^ 2))
-        wrmse_series[i] = sqrt(sum(weights .* diff_sq) / sum(weights))
     end
 
-    # Clarity Deficit computation
     ergo_q_maps = res.ergo_q_maps
     q_target_maps = res.q_target_maps
     N_q = length(ergo_q_maps)
@@ -501,7 +481,7 @@ w_rated_cmd = parse(Float64, opts["w_rated"])
         clarity_deficit_series[i] = mean(deficit_map)
     end
 
-    return rmse_global_series, rmse_target_series, wrmse_series, clarity_deficit_series
+    return rmse_global_series, clarity_deficit_series
 end
 
 @everywhere function run_task(task_tuple)
@@ -517,11 +497,11 @@ end
         res = fn(env, outpath)
     end
 
-    rmse_global, rmse_target, wrmse, clarity_deficit = compute_run_metrics(
+    rmse_global, clarity_deficit = compute_run_metrics(
         res, env.synthetic_data, w_rated_val
     )
 
-    return (seed, strategy_name, vec(res.measurements), rmse_global, rmse_target, wrmse, clarity_deficit)
+    return (seed, strategy_name, vec(res.measurements), rmse_global, clarity_deficit)
 end
 
 # =============================================================================
@@ -529,7 +509,6 @@ end
 # =============================================================================
 function main()
 
-    # Build output folder path: results/YYYYmmdd_HHMMSS
     datetime_str = Dates.format(SCRIPT_START_TIME, "yyyymmdd_HHMMSS")
     data_dir = joinpath(opts["outdir"], datetime_str)
     mkpath(data_dir)
@@ -544,22 +523,16 @@ function main()
     println("Active Workers:   $(workers())")
     println("="^80)
 
-    # Dispatch tasks across workers
     tasks = [(seed, strat, data_dir, w_rated_cmd) for seed in seeds for strat in strategies]
     results = pmap(run_task, tasks)
 
-    # Organize collected outputs by strategy
     measurements_dict    = Dict(s => Float64[] for s in strategies)
     rmse_global_dict     = Dict(s => Vector{Vector{Float64}}() for s in strategies)
-    rmse_target_dict     = Dict(s => Vector{Vector{Float64}}() for s in strategies)
-    wrmse_dict           = Dict(s => Vector{Vector{Float64}}() for s in strategies)
     clarity_deficit_dict = Dict(s => Vector{Vector{Float64}}() for s in strategies)
 
-    for (seed, strat, meas, rmse_g, rmse_t, wrmse, deficit) in results
+    for (seed, strat, meas, rmse_g, deficit) in results
         append!(measurements_dict[strat], meas)
         push!(rmse_global_dict[strat], rmse_g)
-        push!(rmse_target_dict[strat], rmse_t)
-        push!(wrmse_dict[strat], wrmse)
         push!(clarity_deficit_dict[strat], deficit)
     end
 
@@ -569,53 +542,49 @@ function main()
     allowable_buffer = 1.0
     N_mc = length(seeds)
 
-    # Storage arrays for exporting summary reports
     strategy_names_str = String[]
     
+    # Parametric metrics
     m_rmse_g_vals   = Float64[]
     sem_rmse_g_vals = Float64[]
-    
-    m_rmse_t_vals   = Float64[]
-    sem_rmse_t_vals = Float64[]
-    
-    m_wrmse_vals    = Float64[]
-    sem_wrmse_vals  = Float64[]
-    
     m_deficit_vals  = Float64[]
     f_deficit_vals  = Float64[]
-    
     m_error_vals    = Float64[]
     std_error_vals  = Float64[]
     in_buffer_props = Float64[]
 
-    # 1. Compute per-strategy aggregated metrics
+    # Quantile / Non-parametric metrics across seeds
+    med_rmse_g_vals = Float64[]
+    q25_rmse_g_vals = Float64[]
+    q75_rmse_g_vals = Float64[]
+    
+    med_fdef_vals   = Float64[]
+    q25_fdef_vals   = Float64[]
+    q75_fdef_vals   = Float64[]
+
     println("\n" * "="^80)
     println("SUMMARY METRICS Across Monte Carlo Trials (N = $N_mc Seeds)")
     println("="^80)
 
     for strat in strategies
-        # Global RMSE (per-seed mean -> across-seeds mean & SEM)
         seed_means_global = [mean(s) for s in rmse_global_dict[strat]]
         m_rmse_g = mean(seed_means_global)
-        sem_rmse_g = std(seed_means_global) / sqrt(N_mc)
+        sem_rmse_g = N_mc > 1 ? std(seed_means_global) / sqrt(N_mc) : 0.0
 
-        # Target-Masked RMSE
-        seed_means_target = [mean(filter(!isnan, s)) for s in rmse_target_dict[strat]]
-        m_rmse_t = mean(seed_means_target)
-        sem_rmse_t = std(seed_means_target) / sqrt(N_mc)
+        med_rmse_g = median(seed_means_global)
+        q25_rmse_g = quantile(seed_means_global, 0.25)
+        q75_rmse_g = quantile(seed_means_global, 0.75)
 
-        # Ground-Truth Weighted RMSE
-        seed_means_wrmse = [mean(s) for s in wrmse_dict[strat]]
-        m_wrmse = mean(seed_means_wrmse)
-        sem_wrmse = std(seed_means_wrmse) / sqrt(N_mc)
-
-        # Clarity Deficit
         deficit_matrix = hcat(clarity_deficit_dict[strat]...)
         mean_deficit_series = vec(mean(deficit_matrix, dims=2))
         m_deficit = mean(mean_deficit_series)
-        f_deficit = mean_deficit_series[end]
+        
+        seed_final_deficits = [s[end] for s in clarity_deficit_dict[strat]]
+        f_deficit = mean(seed_final_deficits)
+        med_fdef  = median(seed_final_deficits)
+        q25_fdef  = quantile(seed_final_deficits, 0.25)
+        q75_fdef  = quantile(seed_final_deficits, 0.75)
 
-        # Measurement Errors & Target Dwell
         meas = measurements_dict[strat]
         errs = meas .- w_rated_val
         m_err = mean(errs)
@@ -625,34 +594,118 @@ function main()
         push!(strategy_names_str, string(strat))
         push!(m_rmse_g_vals, m_rmse_g)
         push!(sem_rmse_g_vals, sem_rmse_g)
-        push!(m_rmse_t_vals, m_rmse_t)
-        push!(sem_rmse_t_vals, sem_rmse_t)
-        push!(m_wrmse_vals, m_wrmse)
-        push!(sem_wrmse_vals, sem_wrmse)
+        push!(med_rmse_g_vals, med_rmse_g)
+        push!(q25_rmse_g_vals, q25_rmse_g)
+        push!(q75_rmse_g_vals, q75_rmse_g)
+
         push!(m_deficit_vals, m_deficit)
         push!(f_deficit_vals, f_deficit)
+        push!(med_fdef_vals, med_fdef)
+        push!(q25_fdef_vals, q25_fdef)
+        push!(q75_fdef_vals, q75_fdef)
+
         push!(m_error_vals, m_err)
         push!(std_error_vals, s_err)
         push!(in_buffer_props, prop_in_range)
 
         println("Strategy: $(strat)")
-        @printf("  - Global Spatial RMSE:     %.4f ± %.4f\n", m_rmse_g, sem_rmse_g)
-        @printf("  - Target-Masked RMSE:      %.4f ± %.4f\n", m_rmse_t, sem_rmse_t)
-        @printf("  - Weighted RMSE (wRMSE):   %.4f ± %.4f\n", m_wrmse, sem_wrmse)
-        @printf("  - Mean Clarity Deficit:    %.4f\n", m_deficit)
-        @printf("  - Measurement Error Mean:  %.4f\n", m_err)
-        @printf("  - Measurement Error Std:   %.4f\n", s_err)
-        @printf("  - Target Dwell (±%.1f):     %.2f%%\n\n", allowable_buffer, prop_in_range * 100)
+        @printf("  - Spatial RMSE (Mean ± SEM):       %.4f ± %.4f\n", m_rmse_g, sem_rmse_g)
+        @printf("  - Spatial RMSE (Median [Q1, Q3]):  %.4f [%.4f, %.4f]\n", med_rmse_g, q25_rmse_g, q75_rmse_g)
+        @printf("  - Mean Clarity Deficit:            %.4f\n", m_deficit)
+        @printf("  - Final Deficit (Median [Q1, Q3]): %.4f [%.4f, %.4f]\n", med_fdef, q25_fdef, q75_fdef)
+        @printf("  - Measurement Error Mean:          %.4f\n", m_err)
+        @printf("  - Measurement Error Std:           %.4f\n", s_err)
+        @printf("  - Target Dwell (±%.1f):             %.2f%%\n\n", allowable_buffer, prop_in_range * 100)
     end
 
-    # 2. Figure & Histogram Generation
-    fig = Figure(size = (1000, 900))
+    # =========================================================================
+    # VISUALIZATION 1: Per-Seed Metric Distributions (Violin + Jitter Points)
+    # =========================================================================
+    fig_dist = Figure(size = (1100, 500))
+    
+    ax_rmse_v = Axis(fig_dist[1, 1],
+        title = "Spatial RMSE Distribution Across Seeds",
+        xticks = (1:length(strategies), strategy_names_str),
+        ylabel = "Mean Spatial RMSE"
+    )
+    ax_def_v = Axis(fig_dist[1, 2],
+        title = "Final Clarity Deficit Distribution Across Seeds",
+        xticks = (1:length(strategies), strategy_names_str),
+        ylabel = "Final Clarity Deficit"
+    )
+
+    colors = [:dodgerblue, :orange, :crimson, :forestgreen]
+
+    for (k, strat) in enumerate(strategies)
+        rmse_vals = [mean(s) for s in rmse_global_dict[strat]]
+        cats = fill(k, length(rmse_vals))
+        violin!(ax_rmse_v, cats, rmse_vals; color = (colors[k], 0.35), stroke_color = colors[k], stroke_width = 1.5)
+        
+        # Overlay jittered points to show actual seed samples
+        jitter = (rand(length(rmse_vals)) .- 0.5) .* 0.18
+        scatter!(ax_rmse_v, cats .+ jitter, rmse_vals; color = colors[k], markersize = 8, strokewidth = 0.5, strokecolor = :black)
+
+        def_vals = [s[end] for s in clarity_deficit_dict[strat]]
+        violin!(ax_def_v, cats, def_vals; color = (colors[k], 0.35), stroke_color = colors[k], stroke_width = 1.5)
+        scatter!(ax_def_v, cats .+ jitter, def_vals; color = colors[k], markersize = 8, strokewidth = 0.5, strokecolor = :black)
+    end
+
+    Label(fig_dist[0, 1:2], "Monte Carlo Seed Variability Analysis", fontsize = 18, font = :bold)
+    
+    output_dist_fig = joinpath(data_dir, "mc_metric_distributions.png")
+    save(output_dist_fig, fig_dist)
+    println("Seed distribution plot successfully saved to: $output_dist_fig")
+
+    # =========================================================================
+    # VISUALIZATION 2: Time-Series Ribbons (Median ± 25th-75th Percentiles)
+    # =========================================================================
+    fig_ribbon = Figure(size = (1100, 500))
+
+    ax_rmse_t = Axis(fig_ribbon[1, 1], title = "Global Spatial RMSE Trajectory (Median ± IQR)", xlabel = "Time Step", ylabel = "RMSE")
+    ax_def_t  = Axis(fig_ribbon[1, 2], title = "Clarity Deficit Trajectory (Median ± IQR)", xlabel = "Time Step", ylabel = "Clarity Deficit")
+
+    for (k, strat) in enumerate(strategies)
+        rmse_mat = hcat(rmse_global_dict[strat]...)
+        N_steps = size(rmse_mat, 1)
+        steps = 1:N_steps
+
+        med_rmse_t = [median(rmse_mat[i, :]) for i in 1:N_steps]
+        q25_rmse_t = [quantile(rmse_mat[i, :], 0.25) for i in 1:N_steps]
+        q75_rmse_t = [quantile(rmse_mat[i, :], 0.75) for i in 1:N_steps]
+
+        band!(ax_rmse_t, steps, q25_rmse_t, q75_rmse_t; color = (colors[k], 0.25))
+        lines!(ax_rmse_t, steps, med_rmse_t; color = colors[k], linewidth = 2, label = strategy_names_str[k])
+
+        def_mat = hcat(clarity_deficit_dict[strat]...)
+        N_q = size(def_mat, 1)
+        steps_q = 1:N_q
+
+        med_def_t = [median(def_mat[i, :]) for i in 1:N_q]
+        q25_def_t = [quantile(def_mat[i, :], 0.25) for i in 1:N_q]
+        q75_def_t = [quantile(def_mat[i, :], 0.75) for i in 1:N_q]
+
+        band!(ax_def_t, steps_q, q25_def_t, q75_def_t; color = (colors[k], 0.25))
+        lines!(ax_def_t, steps_q, med_def_t; color = colors[k], linewidth = 2, label = strategy_names_str[k])
+    end
+
+    axislegend(ax_rmse_t, position = :rt, framevisible = true)
+    axislegend(ax_def_t, position = :rt, framevisible = true)
+    Label(fig_ribbon[0, 1:2], "Time-Series Convergence & Dispersion across Seeds", fontsize = 18, font = :bold)
+
+    output_ribbon_fig = joinpath(data_dir, "mc_time_series_ribbons.png")
+    save(output_ribbon_fig, fig_ribbon)
+    println("Time-series ribbon plot successfully saved to: $output_ribbon_fig")
+
+    # =========================================================================
+    # VISUALIZATION 3: Measurement Histograms Across MC Runs
+    # =========================================================================
+    fig_hist = Figure(size = (1000, 900))
 
     axs = [
-        Axis(fig[1, 1], title = "Transect",              xlabel = "Error", ylabel = "Frequency", limits = ((-5, 5), nothing)),
-        Axis(fig[1, 2], title = "Non-adaptive Ergodic", xlabel = "Error", ylabel = "Frequency", limits = ((-5, 5), nothing)),
-        Axis(fig[2, 1], title = "BB-IPP",               xlabel = "Error", ylabel = "Frequency", limits = ((-5, 5), nothing)),
-        Axis(fig[2, 2], title = "Adaptive Ergodic",     xlabel = "Error", ylabel = "Frequency", limits = ((-5, 5), nothing))
+        Axis(fig_hist[1, 1], title = "Transect",              xlabel = "Error", ylabel = "Frequency", limits = ((-5, 5), nothing)),
+        Axis(fig_hist[1, 2], title = "Non-adaptive Ergodic", xlabel = "Error", ylabel = "Frequency", limits = ((-5, 5), nothing)),
+        Axis(fig_hist[2, 1], title = "BB-IPP",               xlabel = "Error", ylabel = "Frequency", limits = ((-5, 5), nothing)),
+        Axis(fig_hist[2, 2], title = "Adaptive Ergodic",     xlabel = "Error", ylabel = "Frequency", limits = ((-5, 5), nothing))
     ]
 
     hist_data = [
@@ -670,17 +723,19 @@ function main()
                   strokewidth = 0.5, 
                   strokecolor = :white)
         
-        lbl = "$(name)\nMean: $(round(m_e, digits=2)), Std: $(round(s_e, digits=2))"
+        lbl = "$(name)\nMean: $(round(m_e, digits=2)), Std: $(round(s_e, digits=2))\nMedian: $(round(median(errs), digits=2))"
         axislegend(ax, [h], [lbl], position = :rt, framevisible = true, backgroundcolor = (:white, 0.8))
     end
 
-    Label(fig[0, 1:2], "Measurement Histograms Across Monte Carlo Runs", fontsize = 18, font = :bold)
+    Label(fig_hist[0, 1:2], "Measurement Histograms Across Monte Carlo Runs", fontsize = 18, font = :bold)
 
     output_fig_path = joinpath(data_dir, "measurement_histograms.png")
-    save(output_fig_path, fig)
-    println("Histogram plot successfully saved to: $output_fig_path")
+    save(output_fig_path, fig_hist)
+    println("Histogram plot successfully saved to:  $output_fig_path")
 
-    # 3. Save Text Summary Report
+    # =========================================================================
+    # REPORTS: Text & CSV Summaries
+    # =========================================================================
     wall_runtime_sec = time() - T_START_WALL
     txt_report_path = joinpath(data_dir, "summary_metrics.txt")
     open(txt_report_path, "w") do f
@@ -695,11 +750,11 @@ function main()
         println(f, "")
         for i in 1:length(strategies)
             println(f, "Strategy: ", strategy_names_str[i])
-            @printf(f, "  - Global Spatial RMSE:             %.6f ± %.6f\n", m_rmse_g_vals[i], sem_rmse_g_vals[i])
-            @printf(f, "  - Target-Masked RMSE:              %.6f ± %.6f\n", m_rmse_t_vals[i], sem_rmse_t_vals[i])
-            @printf(f, "  - Ground-Truth Weighted RMSE:      %.6f ± %.6f\n", m_wrmse_vals[i], sem_wrmse_vals[i])
+            @printf(f, "  - Global Spatial RMSE (Mean ± SEM): %.6f ± %.6f\n", m_rmse_g_vals[i], sem_rmse_g_vals[i])
+            @printf(f, "  - Global Spatial RMSE (Median [IQR]): %.6f [%.6f, %.6f]\n", med_rmse_g_vals[i], q25_rmse_g_vals[i], q75_rmse_g_vals[i])
             @printf(f, "  - Mean Clarity Deficit:            %.6f\n", m_deficit_vals[i])
-            @printf(f, "  - Final Clarity Deficit:           %.6f\n", f_deficit_vals[i])
+            @printf(f, "  - Final Clarity Deficit (Mean):    %.6f\n", f_deficit_vals[i])
+            @printf(f, "  - Final Clarity Deficit (Median):  %.6f [%.6f, %.6f]\n", med_fdef_vals[i], q25_fdef_vals[i], q75_fdef_vals[i])
             @printf(f, "  - Error Mean:                      %.6f\n", m_error_vals[i])
             @printf(f, "  - Error Std Dev:                   %.6f\n", std_error_vals[i])
             @printf(f, "  - Proportion In Range (±%.1f):      %.4f (%.2f%%)\n\n", allowable_buffer, in_buffer_props[i], in_buffer_props[i] * 100)
@@ -707,18 +762,17 @@ function main()
     end
     println("Summary report text saved to:         $txt_report_path")
 
-    # 4. Save CSV Metrics Summary
     csv_report_path = joinpath(data_dir, "summary_metrics.csv")
     open(csv_report_path, "w") do f
-        println(f, "Strategy,Global_RMSE,Global_RMSE_SEM,Target_RMSE,Target_RMSE_SEM,Weighted_RMSE,Weighted_RMSE_SEM,Mean_Clarity_Deficit,Final_Clarity_Deficit,Error_Mean,Error_Std,Proportion_In_Target_Range")
+        println(f, "Strategy,Global_RMSE_Mean,Global_RMSE_SEM,Global_RMSE_Median,Global_RMSE_Q25,Global_RMSE_Q75,Mean_Clarity_Deficit,Final_Deficit_Mean,Final_Deficit_Median,Final_Deficit_Q25,Final_Deficit_Q75,Error_Mean,Error_Std,Proportion_In_Target_Range")
         for i in 1:length(strategies)
-            @printf(f, "%s,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
+            @printf(f, "%s,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
                 strategy_names_str[i],
                 m_rmse_g_vals[i], sem_rmse_g_vals[i],
-                m_rmse_t_vals[i], sem_rmse_t_vals[i],
-                m_wrmse_vals[i], sem_wrmse_vals[i],
+                med_rmse_g_vals[i], q25_rmse_g_vals[i], q75_rmse_g_vals[i],
                 m_deficit_vals[i],
                 f_deficit_vals[i],
+                med_fdef_vals[i], q25_fdef_vals[i], q75_fdef_vals[i],
                 m_error_vals[i],
                 std_error_vals[i],
                 in_buffer_props[i]

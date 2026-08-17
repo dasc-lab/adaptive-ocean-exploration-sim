@@ -22,7 +22,7 @@ module load julia/1.11.4
 cd "$SLURM_SUBMIT_DIR"
 
 # Array of rated wind speed environments
-W_RATED_ENVIRONMENTS=("0" "-3.0" "0.5" "2.0")
+W_RATED_ENVIRONMENTS=("0.0" "0.5" "1.0" "1.5")
 
 # Map Slurm Array Task ID to specific environment value
 W_RATED="${W_RATED_ENVIRONMENTS[$SLURM_ARRAY_TASK_ID]}"

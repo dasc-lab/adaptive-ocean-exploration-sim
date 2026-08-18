@@ -1,0 +1,39 @@
+WARNING: method definition for #simulate_prerec_traj#72 at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2294 declares type variable XS but does not use it.
+WARNING: method definition for simulate_prerec_traj at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2294 declares type variable X but does not use it.
+WARNING: method definition for simulate_prerec_traj at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2294 declares type variable X but does not use it.
+┌ Warning: Replacing docs for `Main.Variograms.hp_fit :: Tuple{Any}` in module `Main.Variograms`
+└ @ Base.Docs docs/Docs.jl:243
+ERROR: LoadError: Invalid attributes stroke_width and stroke_color for plot type Violin{Tuple{Vector{Int64}, Vector{Float64}}}.
+
+Did you mean: strokewidth, and strokecolor?
+
+
+The available plot attributes for Violin{Tuple{Vector{Int64}, Vector{Float64}}} are:
+
+bandwidth    dodge            inspector_label  orientation  strokecolor   
+boundary     dodge_gap        max_density      overdraw     strokewidth   
+clip_planes  fxaa             mediancolor      scale        transformation
+color        gap              medianlinewidth  show_median  transparency  
+cycle        inspectable      model            side         visible       
+datalimits   inspector_clear  n_dodge          space        weights       
+depth_shift  inspector_hover  npoints          ssao         width         
+
+
+Stacktrace:
+ [1] validate_attribute_keys(plot::Violin{Tuple{Vector{Int64}, Vector{Float64}}})
+   @ Makie ~/.julia/packages/Makie/XzVRj/src/recipes.jl:960
+ [2] push!(scene::Scene, plot::Plot)
+   @ Makie ~/.julia/packages/Makie/XzVRj/src/scenes.jl:514
+ [3] plot!
+   @ ~/.julia/packages/Makie/XzVRj/src/interfaces.jl:212 [inlined]
+ [4] plot!(ax::Axis, plot::Violin{Tuple{Vector{Int64}, Vector{Float64}}})
+   @ Makie ~/.julia/packages/Makie/XzVRj/src/figureplotting.jl:573
+ [5] _create_plot!(::Function, ::Dict{Symbol, Any}, ::Axis, ::Vector{Int64}, ::Vararg{Any})
+   @ Makie ~/.julia/packages/Makie/XzVRj/src/figureplotting.jl:543
+ [6] violin!(::Axis, ::Vararg{Any}; kw::@Kwargs{color::Tuple{Symbol, Float64}, stroke_color::Symbol, stroke_width::Float64})
+   @ Makie ~/.julia/packages/Makie/XzVRj/src/recipes.jl:550
+ [7] main()
+   @ Main ~/adaptive-ocean-exploration-sim/revision_sims/run_monte_carlo_comparison.jl:642
+ [8] top-level scope
+   @ ~/adaptive-ocean-exploration-sim/revision_sims/run_monte_carlo_comparison.jl:786
+in expression starting at /home/kmgovind/adaptive-ocean-exploration-sim/revision_sims/run_monte_carlo_comparison.jl:786

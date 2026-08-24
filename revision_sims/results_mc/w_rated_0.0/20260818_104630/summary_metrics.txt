@@ -1,0 +1,49 @@
+================================================================================
+MONTE CARLO SIMULATION SUMMARY REPORT
+================================================================================
+Execution Timestamp: 2026-08-18 10:46:30
+Total Wall Runtime:  7710.37 seconds
+Number of MC Seeds:  30 (Base Seed: 1234)
+Target Reference Value: 0.0
+================================================================================
+
+Strategy: transect
+  - Global Spatial RMSE (Mean ± SEM): 0.878202 ± 0.018101
+  - Global Spatial RMSE (Median [IQR]): 0.859003 [0.819174, 0.887402]
+  - Mean Clarity Deficit:            0.187318
+  - Final Clarity Deficit (Mean):    0.187899
+  - Final Clarity Deficit (Median):  0.187899 [0.187899, 0.187899]
+  - Error Mean:                      0.055192
+  - Error Std Dev:                   1.119016
+  - Proportion In Range (±1.0):      0.6232 (62.32%)
+
+Strategy: ergo_nonadaptive
+  - Global Spatial RMSE (Mean ± SEM): 0.875123 ± 0.012700
+  - Global Spatial RMSE (Median [IQR]): 0.881927 [0.822081, 0.908055]
+  - Mean Clarity Deficit:            0.178688
+  - Final Clarity Deficit (Mean):    0.176277
+  - Final Clarity Deficit (Median):  0.176277 [0.176277, 0.176277]
+  - Error Mean:                      0.055005
+  - Error Std Dev:                   1.095822
+  - Proportion In Range (±1.0):      0.6493 (64.93%)
+
+Strategy: ergo_adaptive
+  - Global Spatial RMSE (Mean ± SEM): 0.870628 ± 0.014293
+  - Global Spatial RMSE (Median [IQR]): 0.862482 [0.814743, 0.902694]
+  - Mean Clarity Deficit:            0.138209
+  - Final Clarity Deficit (Mean):    0.118863
+  - Final Clarity Deficit (Median):  0.126168 [0.104292, 0.146395]
+  - Error Mean:                      0.068001
+  - Error Std Dev:                   1.052038
+  - Proportion In Range (±1.0):      0.6677 (66.77%)
+
+Strategy: bb_ipp
+  - Global Spatial RMSE (Mean ± SEM): 0.889536 ± 0.015987
+  - Global Spatial RMSE (Median [IQR]): 0.883475 [0.852307, 0.897026]
+  - Mean Clarity Deficit:            0.142589
+  - Final Clarity Deficit (Mean):    0.123920
+  - Final Clarity Deficit (Median):  0.126104 [0.104472, 0.148817]
+  - Error Mean:                      0.047686
+  - Error Std Dev:                   0.937822
+  - Proportion In Range (±1.0):      0.7257 (72.57%)
+

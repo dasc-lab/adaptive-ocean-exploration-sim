@@ -639,14 +639,14 @@ function main()
     for (k, strat) in enumerate(strategies)
         rmse_vals = [mean(s) for s in rmse_global_dict[strat]]
         cats = fill(k, length(rmse_vals))
-        violin!(ax_rmse_v, cats, rmse_vals; color = (colors[k], 0.35), stroke_color = colors[k], stroke_width = 1.5)
+        violin!(ax_rmse_v, cats, rmse_vals; color = (colors[k], 0.35), strokecolor = colors[k], strokewidth = 1.5)
         
         # Overlay jittered points to show actual seed samples
         jitter = (rand(length(rmse_vals)) .- 0.5) .* 0.18
         scatter!(ax_rmse_v, cats .+ jitter, rmse_vals; color = colors[k], markersize = 8, strokewidth = 0.5, strokecolor = :black)
 
         def_vals = [s[end] for s in clarity_deficit_dict[strat]]
-        violin!(ax_def_v, cats, def_vals; color = (colors[k], 0.35), stroke_color = colors[k], stroke_width = 1.5)
+        violin!(ax_def_v, cats, def_vals; color = (colors[k], 0.35), strokecolor = colors[k], strokewidth = 1.5)
         scatter!(ax_def_v, cats .+ jitter, def_vals; color = colors[k], markersize = 8, strokewidth = 0.5, strokecolor = :black)
     end
 

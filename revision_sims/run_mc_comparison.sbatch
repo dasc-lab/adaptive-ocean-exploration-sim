@@ -21,12 +21,12 @@ module load julia/1.11.4
 
 cd "$SLURM_SUBMIT_DIR"
 
-# 1. Define the parameter spaces
+# 1. Define parameter spaces
 W_VALS=("0.0" "0.5" "1.0" "1.5")
 LS_VALS=("0.2" "1.0")
 LT_VALS=("30.0" "120.0")
 
-# 2. Dynamically build the combinations into flat arrays
+# 2. Build parameter combinations
 W_ARR=()
 LS_ARR=()
 LT_ARR=()
@@ -41,20 +41,19 @@ for w in "${W_VALS[@]}"; do
     done
 done
 
-# 3. Map Slurm Array Task ID to the specific combination
+# 3. Map Task ID to parameters
 W_RATED="${W_ARR[$SLURM_ARRAY_TASK_ID]}"
 LS="${LS_ARR[$SLURM_ARRAY_TASK_ID]}"
 LT="${LT_ARR[$SLURM_ARRAY_TASK_ID]}"
 
 NUM_MC=30
 BASE_SEED=1234
-# Ensure outputs are separated to prevent plot overwriting
 OUT_DIR="results_mc/w_${W_RATED}_ls_${LS}_lt_${LT}"
 
 echo "Array Task ID ${SLURM_ARRAY_TASK_ID}: Running Wind = ${W_RATED}, Ls = ${LS}, Lt = ${LT}"
 
-# 4. Execute the Julia script with the mapped parameters
-julia --project run_monte_carlo_comparison_3.jl \
+# 4. Run Julia script
+julia --project run_monte_carlo_comparison.jl \
     --nworkers "$SLURM_CPUS_PER_TASK" \
     --num_mc "$NUM_MC" \
     --base_seed "$BASE_SEED" \

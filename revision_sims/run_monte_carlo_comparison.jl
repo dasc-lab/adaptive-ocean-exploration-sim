@@ -1,12 +1,6 @@
 #!/usr/bin/env julia
 # =============================================================================
 # run_monte_carlo_comparison.jl
-#
-# Monte Carlo comparison of mission strategies across multiple environment seeds:
-#   1. :transect          - fixed lawnmower/TSP waypoint sweep with t0 target clarity
-#   2. :ergo_nonadaptive   - ergodic control, target clarity map fixed at t0
-#   3. :ergo_adaptive      - ergodic control, target clarity map recomputed every step
-#   4. :bb_ipp             - branch-and-bound IPP
 # =============================================================================
 
 using Distributed, Dates, Printf, CairoMakie
@@ -23,8 +17,8 @@ function parse_args(args)
         "num_mc"     => "5",
         "base_seed"  => "1234",
         "w_rated"    => "-3.5",
-        "ls"         => "0.75",  # Add default Ls
-        "lt"         => "45.0",  # Add default Lt
+        "ls"         => "0.75",
+        "lt"         => "45.0",
         "strategies" => "transect,ergo_nonadaptive,ergo_adaptive,bb_ipp",
         "outdir"     => "results",
         "srcdir"     => joinpath(@__DIR__, "../", "src"),
@@ -50,7 +44,6 @@ base_seed = parse(Int, opts["base_seed"])
 seeds = base_seed:(base_seed + num_mc - 1)
 SCRIPT_SRC_DIR = abspath(opts["srcdir"])
 
-# Worker Allocation
 if nprocs() == 1
     total_tasks = length(seeds) * length(strategies)
     addprocs(min(nworkers_requested, total_tasks); exename=joinpath(Sys.BINDIR, "julia"))
@@ -184,7 +177,6 @@ end
         return target_spatial_dist, q_target_temp
     end
 
-    # Strategy 1: Transect
     function heading_calculator(speed, position, waypoint)
         dx, dy = waypoint[1] - position[1], waypoint[2] - position[2]
         heading = atan(dy, dx)
@@ -195,7 +187,6 @@ end
         return function (t, xs, Mean, w_rated_val, convex_polygon;
                 ergo_grid, ergo_q_map, traj, transect_pts, waypoint_idx, umax=0.15, ΔT, kwargs...)
 
-            # ALWAYS compute the current spatial distribution to log target clarity maps correctly
             _, current_q_target_temp = compute_target_spatial_dist(
                 Mean, ergo_q_map, w_rated_val, convex_polygon, ergo_grid, env)
 
@@ -236,30 +227,24 @@ end
         return res
     end
 
-    # Strategy 2: Non-adaptive Ergodic
     function make_nonadaptive_ergo_controller(env)
-        # Cache to freeze the target spatial distribution used for control planning
         cache = Ref{Union{Nothing,Matrix{Float64}}}(nothing)
 
         return function (t, xs, Mean, w_rated_val, convex_polygon;
                 ergo_grid, ergo_q_map, traj, umax=0.15, ΔT, kwargs...)
 
-            # ALWAYS compute the current maps to maintain accurate logging for clarity deficit
             current_target_spatial_dist, current_q_target_temp = compute_target_spatial_dist(
                 Mean, ergo_q_map, w_rated_val, convex_polygon, ergo_grid, env)
 
             if cache[] === nothing
-                # Freeze the initial target spatial distribution for nonadaptive planning
                 cache[] = current_target_spatial_dist
             end
 
-            # Plan paths using the frozen initial spatial distribution
             target_spatial_dist = cache[]
             u = [ErgodicController.controller_single_integrator_cvx_bound(
                     ergo_grid, x, traj, target_spatial_dist, convex_polygon;
                     umax=umax, do_boundary_correction=true) for x in xs]
 
-            # Return the dynamically updating target clarity map to the simulator logger
             return u, current_q_target_temp
         end
     end
@@ -277,7 +262,6 @@ end
         return res
     end
 
-    # Strategy 3: Adaptive Ergodic
     function make_adaptive_ergo_controller(env)
         return function (t, xs, Mean, w_rated_val, convex_polygon;
                 ergo_grid, ergo_q_map, traj, umax=0.15, ΔT, kwargs...)
@@ -303,7 +287,6 @@ end
         return res
     end
 
-    # Strategy 4: BB-IPP
     struct MotionPrimitive
         dtheta::Float64
         dist::Float64
@@ -488,11 +471,12 @@ lt_cmd = parse(Float64, opts["lt"])
     return rmse_global_series, clarity_deficit_series
 end
 
+# UNPACK ls_val and lt_val explicitly to prevent scope errors on worker nodes
 @everywhere function run_task(task_tuple)
-    seed, strategy_name, outdir, w_rated_val = task_tuple
+    seed, strategy_name, outdir, w_rated_val, ls_val, lt_val = task_tuple
     outpath = joinpath(outdir, "trial_seed$(seed)_$(strategy_name).jld2")
     
-    env = build_environment(; seed=seed, w_rated_val=w_rated_val, ls_val=ls_cmd, lt_val=lt_cmd)
+    env = build_environment(; seed=seed, w_rated_val=w_rated_val, ls_val=ls_val, lt_val=lt_val)
     
     if isfile(outpath)
         res = load(outpath, "res")
@@ -523,11 +507,14 @@ function main()
     println("Output Directory: $(abspath(data_dir))")
     println("MC Seeds:         $(seeds)")
     println("Rated Wind Speed: $(w_rated_cmd) m/s")
+    println("Spatial Ls:       $(ls_cmd)")
+    println("Temporal Lt:      $(lt_cmd)")
     println("Strategies:       $(strategies)")
     println("Active Workers:   $(workers())")
     println("="^80)
 
-    tasks = [(seed, strat, data_dir, w_rated_cmd) for seed in seeds for strat in strategies]
+    # Pass ls_cmd and lt_cmd explicitly into the worker tasks tuple
+    tasks = [(seed, strat, data_dir, w_rated_cmd, ls_cmd, lt_cmd) for seed in seeds for strat in strategies]
     results = pmap(run_task, tasks)
 
     measurements_dict    = Dict(s => Float64[] for s in strategies)
@@ -548,7 +535,6 @@ function main()
 
     strategy_names_str = String[]
     
-    # Parametric metrics
     m_rmse_g_vals   = Float64[]
     sem_rmse_g_vals = Float64[]
     m_deficit_vals  = Float64[]
@@ -557,7 +543,6 @@ function main()
     std_error_vals  = Float64[]
     in_buffer_props = Float64[]
 
-    # Quantile / Non-parametric metrics across seeds
     med_rmse_g_vals = Float64[]
     q25_rmse_g_vals = Float64[]
     q75_rmse_g_vals = Float64[]
@@ -645,7 +630,6 @@ function main()
         cats = fill(k, length(rmse_vals))
         violin!(ax_rmse_v, cats, rmse_vals; color = (colors[k], 0.35), strokecolor = colors[k], strokewidth = 1.5)
         
-        # Overlay jittered points to show actual seed samples
         jitter = (rand(length(rmse_vals)) .- 0.5) .* 0.18
         scatter!(ax_rmse_v, cats .+ jitter, rmse_vals; color = colors[k], markersize = 8, strokewidth = 0.5, strokecolor = :black)
 

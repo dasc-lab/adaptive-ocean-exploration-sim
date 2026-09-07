@@ -190,16 +190,12 @@ end
     end
 
     function make_transect_controller(env)
-        cached_q_target_temp = Ref{Union{Nothing,Matrix{Float64}}}(nothing)
-
         return function (t, xs, Mean, w_rated_val, convex_polygon;
                 ergo_grid, ergo_q_map, traj, transect_pts, waypoint_idx, umax=0.15, ΔT, kwargs...)
 
-            if cached_q_target_temp[] === nothing
-                _, q_target_temp = compute_target_spatial_dist(
-                    Mean, ergo_q_map, w_rated_val, convex_polygon, ergo_grid, env)
-                cached_q_target_temp[] = q_target_temp
-            end
+            # ALWAYS compute the current spatial distribution to log target clarity maps correctly
+            _, current_q_target_temp = compute_target_spatial_dist(
+                Mean, ergo_q_map, w_rated_val, convex_polygon, ergo_grid, env)
 
             current_waypoint = transect_pts[waypoint_idx]
             u_out = Vector{SVector{2,Float64}}(undef, length(xs))
@@ -220,7 +216,7 @@ end
                 end
             end
             
-            return u_out, cached_q_target_temp[], waypoint_idx
+            return u_out, current_q_target_temp, waypoint_idx
         end
     end
 
@@ -240,25 +236,29 @@ end
 
     # Strategy 2: Non-adaptive Ergodic
     function make_nonadaptive_ergo_controller(env)
+        # Cache to freeze the target spatial distribution used for control planning
         cache = Ref{Union{Nothing,Matrix{Float64}}}(nothing)
-        cached_q_target_temp = Ref{Union{Nothing,Matrix{Float64}}}(nothing)
 
         return function (t, xs, Mean, w_rated_val, convex_polygon;
                 ergo_grid, ergo_q_map, traj, umax=0.15, ΔT, kwargs...)
 
+            # ALWAYS compute the current maps to maintain accurate logging for clarity deficit
+            current_target_spatial_dist, current_q_target_temp = compute_target_spatial_dist(
+                Mean, ergo_q_map, w_rated_val, convex_polygon, ergo_grid, env)
+
             if cache[] === nothing
-                target_spatial_dist, q_target_temp = compute_target_spatial_dist(
-                    Mean, ergo_q_map, w_rated_val, convex_polygon, ergo_grid, env)
-                cache[] = target_spatial_dist
-                cached_q_target_temp[] = q_target_temp
+                # Freeze the initial target spatial distribution for nonadaptive planning
+                cache[] = current_target_spatial_dist
             end
 
+            # Plan paths using the frozen initial spatial distribution
             target_spatial_dist = cache[]
             u = [ErgodicController.controller_single_integrator_cvx_bound(
                     ergo_grid, x, traj, target_spatial_dist, convex_polygon;
                     umax=umax, do_boundary_correction=true) for x in xs]
 
-            return u, cached_q_target_temp[]
+            # Return the dynamically updating target clarity map to the simulator logger
+            return u, current_q_target_temp
         end
     end
 

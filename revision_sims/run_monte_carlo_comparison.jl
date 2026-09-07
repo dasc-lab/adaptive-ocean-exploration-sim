@@ -475,9 +475,10 @@ end
 @everywhere function run_task(task_tuple)
     seed, strategy_name, outdir, w_rated_val, ls_val, lt_val = task_tuple
     outpath = joinpath(outdir, "trial_seed$(seed)_$(strategy_name).jld2")
-    
+
+    # Use locally unpacked ls_val and lt_val instead of global ls_cmd / lt_cmd
     env = build_environment(; seed=seed, w_rated_val=w_rated_val, ls_val=ls_val, lt_val=lt_val)
-    
+
     if isfile(outpath)
         res = load(outpath, "res")
     else

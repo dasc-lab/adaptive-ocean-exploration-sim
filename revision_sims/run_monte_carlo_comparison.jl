@@ -23,6 +23,8 @@ function parse_args(args)
         "num_mc"     => "5",
         "base_seed"  => "1234",
         "w_rated"    => "-3.5",
+        "ls"         => "0.75",  # Add default Ls
+        "lt"         => "45.0",  # Add default Lt
         "strategies" => "transect,ergo_nonadaptive,ergo_adaptive,bb_ipp",
         "outdir"     => "results",
         "srcdir"     => joinpath(@__DIR__, "../", "src"),
@@ -82,7 +84,7 @@ end
 # =============================================================================
 # Environment & Controller Definitions
 # =============================================================================
-@everywhere function build_environment(; seed=1234, w_rated_val=-3.5)
+@everywhere function build_environment(;seed=1234, w_rated_val=-3.5, ls_val=0.75, lt_val=45.0)
     Random.seed!(seed)
 
     Δt      = 2.5
@@ -94,8 +96,8 @@ end
     ts_min  = T_begin*60:dt_min:T_end*60
 
     σt, σs = 1.0, 1.0
-    lt = 0.75 * 60.0
-    ls = 0.75
+    lt = lt_val
+    ls = ls_val
     kt = Matern(1/2, σt, lt)
     ks = Matern(1/2, σs, ls)
 
@@ -451,6 +453,8 @@ end
 )
 
 w_rated_cmd = parse(Float64, opts["w_rated"])
+ls_cmd = parse(Float64, opts["ls"])
+lt_cmd = parse(Float64, opts["lt"])
 
 # =============================================================================
 # Helper Function to Compute Spatial RMSE & Clarity Deficit Over Time
@@ -488,7 +492,7 @@ end
     seed, strategy_name, outdir, w_rated_val = task_tuple
     outpath = joinpath(outdir, "trial_seed$(seed)_$(strategy_name).jld2")
     
-    env = build_environment(; seed=seed, w_rated_val=w_rated_val)
+    env = build_environment(; seed=seed, w_rated_val=w_rated_val, ls_val=ls_cmd, lt_val=lt_cmd)
     
     if isfile(outpath)
         res = load(outpath, "res")
@@ -536,7 +540,7 @@ function main()
         push!(clarity_deficit_dict[strat], deficit)
     end
 
-    sample_env = build_environment(; seed=base_seed, w_rated_val=w_rated_cmd)
+    sample_env = build_environment(; seed=base_seed, w_rated_val=w_rated_cmd, ls_val=ls_cmd, lt_val=lt_cmd)
     w_rated_val = sample_env.w_rated_val
 
     allowable_buffer = 1.0

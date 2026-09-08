@@ -9,8 +9,8 @@ BASE_SEED=1234
 
 # Defined as comma-separated sweeps
 W_RATED="0.0, 0.5, 1.0, 1.5, 2.0"
-LS="0.15, 0.75, 1.5"
-LT="30.0, 115.0"
+LS="0.2, 0.75, 1.5"
+LT="30.0, 120.0"
 
 STRATEGIES="transect,ergo_nonadaptive,ergo_adaptive,bb_ipp"
 OUT_DIR="./data_results"

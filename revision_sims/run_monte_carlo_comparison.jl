@@ -1,6 +1,6 @@
 #!/usr/bin/env julia
 # =============================================================================
-# run_monte_carlo_comparison_4.jl (Storage-Optimized)
+# run_monte_carlo_comparison.jl (Storage-Optimized)
 # =============================================================================
 
 using Distributed, Dates, Printf, CairoMakie

@@ -2,7 +2,7 @@
 #SBATCH --job-name=stgp-mc-array
 #SBATCH --account=cvermill0
 #SBATCH --partition=standard
-#SBATCH --array=0-15                  # Index range for 16 environments (4 winds * 2 Ls * 2 Lt)
+#SBATCH --array=0-23                  # Index range for 24 environments (4 winds * 3 Ls * 2 Lt)
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
@@ -23,7 +23,7 @@ cd "$SLURM_SUBMIT_DIR"
 
 # 1. Define parameter spaces
 W_VALS=("0.0" "0.5" "1.0" "1.5")
-LS_VALS=("0.2" "1.0")
+LS_VALS=("0.2" "0.75" "1.0")
 LT_VALS=("30.0" "120.0")
 
 # 2. Build parameter combinations

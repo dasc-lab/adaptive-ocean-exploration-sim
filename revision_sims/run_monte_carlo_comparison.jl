@@ -661,6 +661,43 @@ function main()
     # =========================================================================
     # REPORTS: Comprehensive TXT & CSV Flattening
     # =========================================================================
+    txt_report_path = joinpath(data_dir, "summary_table.txt")
+    open(txt_report_path, "w") do f
+        println(f, "="^115)
+        println(f, "MONTE CARLO SIMULATION SUMMARY TABLE")
+        println(f, "Generated: $(Dates.format(Dates.now(), "yyyy-mm-dd HH:MM:SS"))")
+        println(f, "="^115)
+        
+        @printf(f, "%-7s | %-5s | %-6s | %-16s | %-18s | %-15s | %-12s | %-10s\n",
+            "W_rated", "Ls", "Lt", "Strategy", "RMSE (Mean ± SEM)", "Final Deficit", "Mean Error", "In-Target")
+        println(f, "-"^115)
+
+        for w in w_rated_cmd, ls in ls_cmd, lt in lt_cmd
+            for (k, strat) in enumerate(strategies)
+                rmse_series = rmse_global_dict[(strat, w, ls, lt)]
+                if isempty(rmse_series) continue end
+
+                seed_means = [mean(s) for s in rmse_series]
+                m_rmse_g = mean(seed_means)
+                sem_rmse_g = N_mc > 1 ? std(seed_means) / sqrt(N_mc) : 0.0
+
+                f_deficits = [s[end] for s in clarity_deficit_dict[(strat, w, ls, lt)]]
+                
+                errs = measurements_dict[(strat, w, ls, lt)] .- w
+                in_range = count(abs.(errs) .<= allowable_buffer) / max(1, length(errs))
+
+                rmse_str = @sprintf("%.4f ± %.4f", m_rmse_g, sem_rmse_g)
+
+                @printf(f, "%-7.2f | %-5.2f | %-6.2f | %-16s | %-18s | %-15.4f | %-12.4f | %-9.1f%%\n",
+                    w, ls, lt, strategy_names_str[k],
+                    rmse_str, mean(f_deficits), mean(errs), in_range * 100.0
+                )
+            end
+            println(f, "-"^115) # Separator block between environmental combinations
+        end
+        println(f, "="^115)
+    end
+
     csv_report_path = joinpath(data_dir, "summary_metrics.csv")
     open(csv_report_path, "w") do f
         println(f, "W_Rated,Ls,Lt,Strategy,Global_RMSE_Mean,Global_RMSE_SEM,Global_RMSE_Median,Global_RMSE_Q25,Global_RMSE_Q75,Mean_Clarity_Deficit,Final_Deficit_Mean,Final_Deficit_Median,Final_Deficit_Q25,Final_Deficit_Q75,Error_Mean,Error_Std,Proportion_In_Target_Range")
@@ -688,6 +725,12 @@ function main()
             )
         end
     end
+    
+    wall_runtime_sec = time() - T_START_WALL
+    println("\nSweep Complete! Total Wall Runtime: ", round(wall_runtime_sec, digits=2), " seconds")
+    println("Summary metrics CSV saved to: ", csv_report_path)
+    println("Summary ASCII Table saved to: ", txt_report_path)
+    println("="^80)
     
     wall_runtime_sec = time() - T_START_WALL
     println("\nSweep Complete! Total Wall Runtime: ", round(wall_runtime_sec, digits=2), " seconds")

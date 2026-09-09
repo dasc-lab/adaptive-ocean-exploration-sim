@@ -1,6 +1,6 @@
 #!/usr/bin/env julia
 # =============================================================================
-# run_monte_carlo_comparison.jl (Storage-Optimized)
+# run_monte_carlo_comparison.jl (Storage-Optimized with Environment Caching)
 # =============================================================================
 
 using Distributed, Dates, Printf, CairoMakie
@@ -81,9 +81,16 @@ end
 end
 
 # =============================================================================
-# Environment & Controller Definitions
+# Environment & Controller Definitions (With Worker-Level Caching)
 # =============================================================================
-@everywhere function build_environment(;seed=1234, w_rated_val=-3.5, ls_val=0.75, lt_val=45.0)
+@everywhere const ENV_CACHE = Dict{Tuple{Int, Float64, Float64}, Any}()
+
+@everywhere function get_base_environment(; seed=1234, ls_val=0.75, lt_val=45.0)
+    key = (seed, ls_val, lt_val)
+    if haskey(ENV_CACHE, key)
+        return ENV_CACHE[key]
+    end
+
     Random.seed!(seed)
 
     Δt      = 2.5
@@ -135,11 +142,19 @@ end
     σ_meas = 0.5
     σ_t = zeros(length(xs), length(ys))
 
-    return (; Δt, dt_min, dt_hrs, T_begin, T_end, ts_hrs, ts_min,
+    base_env = (; Δt, dt_min, dt_hrs, T_begin, T_end, ts_hrs, ts_min,
             ks, kt, xs, ys, grid_pts, synthetic_data, problem, ngpkf_grid,
             x0s, target_q_mat, soc_begin, soc_end, soc_target,
             transect_pts, fuse_measurements_every_ΔT, recompute_controller_every_ΔT,
-            w_rated_val, σ_meas, σ_t, convex_polygon = JordanLakeDomain.convex_polygon)
+            σ_meas, σ_t, convex_polygon = JordanLakeDomain.convex_polygon)
+
+    ENV_CACHE[key] = base_env
+    return base_env
+end
+
+@everywhere function build_environment(; seed=1234, w_rated_val=-3.5, ls_val=0.75, lt_val=45.0)
+    base_env = get_base_environment(; seed=seed, ls_val=ls_val, lt_val=lt_val)
+    return merge(base_env, (; w_rated_val=w_rated_val))
 end
 
 @everywhere begin
@@ -475,14 +490,13 @@ end
     filename = @sprintf("trial_seed%d_%s_w%.2f_ls%.2f_lt%.2f.jld2", seed, strategy_name, w_rated_val, ls_val, lt_val)
     outpath = joinpath(outdir, filename)
 
-    env = build_environment(; seed=seed, w_rated_val=w_rated_val, ls_val=ls_val, lt_val=lt_val)
-
     if isfile(outpath)
         data = load(outpath)
         meas = data["measurements"]
         rmse_global = data["rmse_global"]
         clarity_deficit = data["clarity_deficit"]
     else
+        env = build_environment(; seed=seed, w_rated_val=w_rated_val, ls_val=ls_val, lt_val=lt_val)
         fn = STRATEGY_FNS[strategy_name]
         res = fn(env)
 
@@ -730,11 +744,6 @@ function main()
     println("\nSweep Complete! Total Wall Runtime: ", round(wall_runtime_sec, digits=2), " seconds")
     println("Summary metrics CSV saved to: ", csv_report_path)
     println("Summary ASCII Table saved to: ", txt_report_path)
-    println("="^80)
-    
-    wall_runtime_sec = time() - T_START_WALL
-    println("\nSweep Complete! Total Wall Runtime: ", round(wall_runtime_sec, digits=2), " seconds")
-    println("Summary metrics CSV saved to: ", csv_report_path)
     println("="^80)
 end
 

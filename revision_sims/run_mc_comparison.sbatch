@@ -2,7 +2,7 @@
 #SBATCH --job-name=stgp-mc-array
 #SBATCH --account=cvermill0
 #SBATCH --partition=standard
-#SBATCH --array=0-5                   # 6 tasks total (3 Ls * 2 Lt)
+#SBATCH --array=0-8                   # 9 tasks total (3 Ls * 3 Lt)
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
@@ -23,7 +23,7 @@ cd "$SLURM_SUBMIT_DIR"
 
 # 1. Define length scale parameter spaces
 LS_VALS=("0.2" "0.75" "1.0")
-LT_VALS=("30.0" "120.0")
+LT_VALS=("30.0" "75.0" "120.0")
 
 # 2. Build length scale combinations (6 total)
 LS_ARR=()

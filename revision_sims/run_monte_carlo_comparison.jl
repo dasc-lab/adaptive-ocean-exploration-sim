@@ -1,6 +1,6 @@
 #!/usr/bin/env julia
 # =============================================================================
-# run_monte_carlo_comparison_7.jl (Storage-Optimized with Environment Caching)
+# run_monte_carlo_comparison.jl (Storage-Optimized with Environment Caching)
 # =============================================================================
 
 using Distributed, Dates, Printf, CairoMakie
@@ -9,7 +9,7 @@ const SCRIPT_START_TIME = Dates.now()
 const T_START_WALL = time()
 
 # ---- Arg Parsing -----------------------------------------------------------
-const N_STRATEGIES_DEFAULT = 4
+const N_STRATEGIES_DEFAULT = 5
 
 function parse_args(args)
     opts = Dict{String,String}(
@@ -19,7 +19,7 @@ function parse_args(args)
         "w_rated"    => "-3.5",
         "ls"         => "0.75",
         "lt"         => "45.0",
-        "strategies" => "transect,ergo_nonadaptive,ergo_adaptive,bb_ipp",
+        "strategies" => "transect,bb_ipp_nonadaptive,bb_ipp_adaptive,ergo_nonadaptive,ergo_adaptive",
         "outdir"     => "results",
         "srcdir"     => joinpath(@__DIR__, "../", "src"),
     )
@@ -378,7 +378,78 @@ end
         return state.z_star, state.gamma_star
     end
 
-    function make_bb_ipp_controller(env; H=5, M_primitives=7, primitive_stride=20)
+    function make_nonadaptive_bb_ipp_controller(env; H=5, M_primitives=7, primitive_stride=20)
+        heading_state = Ref(0.0)
+        dt_sec_per_primitive = primitive_stride * env.Δt
+        cache = Ref{Union{Nothing,Matrix{Float64}}}(nothing)
+
+        return function (t, xs, Mean, w_rated_val, convex_polygon;
+                ergo_grid, ergo_q_map, traj, umax=0.15, ΔT, kwargs...)
+
+            current_target_spatial_dist, current_q_target_temp = compute_target_spatial_dist(
+                Mean, ergo_q_map, w_rated_val, convex_polygon, ergo_grid, env)
+
+            if cache[] === nothing
+                cache[] = current_target_spatial_dist
+            end
+
+            target_spatial_dist = cache[]
+
+            L_UB = max(maximum(target_spatial_dist), 1e-6)
+            dist_km = umax * dt_sec_per_primitive / 1000.0
+            primitives = get_motion_primitives(1.0, dist_km, M_primitives)
+
+            grid_xs = ErgodicController.xs(ergo_grid)
+            grid_ys = ErgodicController.ys(ergo_grid)
+
+            u_out = Vector{SVector{2,Float64}}(undef, length(xs))
+            for (k, x) in enumerate(xs)
+                x_start = [x[1], x[2]]
+
+                z_star, gamma_star = path_planning_bb_fast(
+                    x_start, heading_state[], H, primitives, L_UB,
+                    target_spatial_dist, grid_xs, grid_ys, convex_polygon
+                )
+
+                if isempty(z_star) || z_star[1] == 0 || isinf(gamma_star) || gamma_star <= -5.0
+                    centroid = ConvexBoundAvoidance.calculate_centroid(convex_polygon)
+                    step_heading = atan(centroid[2] - x[2], centroid[1] - x[1])
+                else
+                    chosen_prim = primitives[z_star[1]]
+                    dtheta_step = chosen_prim.dtheta / primitive_stride
+                    step_heading = heading_state[] + dtheta_step
+                end
+
+                u_raw = @SVector[umax * cos(step_heading), umax * sin(step_heading)]
+                safe_margin_km = 0.015
+                u_safe = ErgodicController.convex_bounary_correction(
+                    convex_polygon, x, u_raw; speed_max=umax, min_safe_d=safe_margin_km
+                )
+
+                if norm(u_safe) > 1e-4
+                    heading_state[] = atan(u_safe[2], u_safe[1])
+                else
+                    heading_state[] = step_heading
+                end
+                u_out[k] = u_safe
+            end
+            return u_out, current_q_target_temp
+        end
+    end
+
+    function run_bb_ipp_nonadaptive(env)
+        controller = make_nonadaptive_bb_ipp_controller(env)
+        res = SimulatorST.simulate_known_param(
+            env.ts_min, env.x0s, env.soc_begin, controller, env.soc_target,
+            env.w_rated_val, env.convex_polygon, env.problem;
+            ngpkf_grid=env.ngpkf_grid, EnvData=env.synthetic_data, σ_meas=env.σ_meas,
+            Q_process=diagm(vec(env.σ_t .^ 2 .* env.fuse_measurements_every_ΔT)),
+            fuse_measurements_every_ΔT=env.fuse_measurements_every_ΔT,
+            recompute_controller_every_ΔT=env.recompute_controller_every_ΔT)
+        return res
+    end
+
+    function make_adaptive_bb_ipp_controller(env; H=5, M_primitives=7, primitive_stride=20)
         heading_state = Ref(0.0)
         dt_sec_per_primitive = primitive_stride * env.Δt
 
@@ -430,8 +501,8 @@ end
         end
     end
 
-    function run_bb_ipp(env)
-        controller = make_bb_ipp_controller(env)
+    function run_bb_ipp_adaptive(env)
+        controller = make_adaptive_bb_ipp_controller(env)
         res = SimulatorST.simulate_known_param(
             env.ts_min, env.x0s, env.soc_begin, controller, env.soc_target,
             env.w_rated_val, env.convex_polygon, env.problem;
@@ -444,10 +515,11 @@ end
 end
 
 @everywhere const STRATEGY_FNS = Dict(
-    :transect          => run_transect,
-    :ergo_nonadaptive  => run_ergo_nonadaptive,
-    :ergo_adaptive     => run_ergo_adaptive,
-    :bb_ipp            => run_bb_ipp,
+    :transect           => run_transect,
+    :bb_ipp_nonadaptive => run_bb_ipp_nonadaptive,
+    :bb_ipp_adaptive    => run_bb_ipp_adaptive,
+    :ergo_nonadaptive   => run_ergo_nonadaptive,
+    :ergo_adaptive      => run_ergo_adaptive,
 )
 
 # =============================================================================
@@ -607,7 +679,7 @@ function main()
     strategy_names_str = string.(strategies)
     
     # Plot formatting constants
-    colors = [:dodgerblue, :orange, :crimson, :forestgreen]
+    colors = [:dodgerblue, :orange, :crimson, :forestgreen, :purple]
     ls_lt_combos = [(ls, lt) for ls in ls_cmd for lt in lt_cmd]
     ls_lt_labels = ["Ls=$ls\nLt=$lt" for (ls, lt) in ls_lt_combos]
 
@@ -732,7 +804,7 @@ function main()
         println(f, "Generated: $(Dates.format(Dates.now(), "yyyy-mm-dd HH:MM:SS"))")
         println(f, "="^125)
         
-        @printf(f, "%-7s | %-5s | %-6s | %-16s | %-18s | %-20s | %-20s | %-10s\n",
+        @printf(f, "%-7s | %-5s | %-6s | %-20s | %-18s | %-20s | %-20s | %-10s\n",
             "W_rated", "Ls", "Lt", "Strategy", "RMSE (Mean ± SEM)", "Est Def (Mean±IQR)", "GT Def (Mean±IQR)", "In-Target")
         println(f, "-"^125)
 
@@ -760,7 +832,7 @@ function main()
 
                 rmse_str = @sprintf("%.4f ± %.4f", m_rmse_g, sem_rmse_g)
 
-                @printf(f, "%-7.2f | %-5.2f | %-6.2f | %-16s | %-18s | %-20s | %-20s | %-9.1f%%\n",
+                @printf(f, "%-7.2f | %-5.2f | %-6.2f | %-20s | %-18s | %-20s | %-20s | %-9.1f%%\n",
                     w, ls, lt, strategy_names_str[k],
                     rmse_str, def_str, gt_str, in_range * 100.0
                 )

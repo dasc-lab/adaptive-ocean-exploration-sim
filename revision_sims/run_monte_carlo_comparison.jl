@@ -1,6 +1,6 @@
 #!/usr/bin/env julia
 # =============================================================================
-# run_monte_carlo_comparison.jl (Storage-Optimized with Environment Caching)
+# run_monte_carlo_comparison_7.jl (Storage-Optimized with Environment Caching)
 # =============================================================================
 
 using Distributed, Dates, Printf, CairoMakie
@@ -453,7 +453,13 @@ end
 # =============================================================================
 # Helper Function to Compute Spatial RMSE & Clarity Deficit Over Time
 # =============================================================================
-@everywhere function compute_run_metrics(res, synthetic_data, w_rated_val)
+@everywhere function compute_run_metrics(res, env)
+    synthetic_data = env.synthetic_data
+    w_rated_val = env.w_rated_val
+    convex_polygon = env.convex_polygon
+    xs = synthetic_data.xs
+    ys = synthetic_data.ys
+
     w_hats = res.w_hats
     N_steps = length(w_hats)
     N_truth = size(synthetic_data.data, 3)
@@ -474,12 +480,36 @@ end
     N_q = length(ergo_q_maps)
     
     clarity_deficit_series = zeros(N_q)
+    gt_clarity_deficit_series = zeros(N_q)
+    q_step_ratio = N_q > 1 ? (N_truth - 1) / (N_q - 1) : 0.0
+
     for i in 1:N_q
+        # 1. Estimated (Normal) Clarity Deficit
         deficit_map = max.(0.0, q_target_maps[i] .- ergo_q_maps[i])
         clarity_deficit_series[i] = mean(deficit_map)
+
+        # 2. Ground Truth Clarity Deficit Calculation
+        truth_idx = N_q > 1 ? min(floor(Int, (i - 1) * q_step_ratio) + 1, N_truth) : 1
+        truth_map = synthetic_data.data[:, :, truth_idx]
+        
+        target_q = 0.95
+        lambda_param = 0.25
+        delta = -lambda_param .* ((truth_map .- w_rated_val) .^ 2)
+        gt_q_target_map = target_q .* exp.(delta)
+
+        # Mask out locations outside convex polygon
+        for xi in 1:length(xs), yj in 1:length(ys)
+            p = [xs[xi], ys[yj]]
+            if !(p ∈ convex_polygon.polygon)
+                gt_q_target_map[xi, yj] = 0.0
+            end
+        end
+
+        gt_deficit_map = max.(0.0, gt_q_target_map .- ergo_q_maps[i])
+        gt_clarity_deficit_series[i] = mean(gt_deficit_map)
     end
 
-    return rmse_global_series, clarity_deficit_series
+    return rmse_global_series, clarity_deficit_series, gt_clarity_deficit_series
 end
 
 # Executed by map parallel workers
@@ -495,15 +525,14 @@ end
         meas = data["measurements"]
         rmse_global = data["rmse_global"]
         clarity_deficit = data["clarity_deficit"]
+        gt_clarity_deficit = get(data, "gt_clarity_deficit", clarity_deficit)
     else
         env = build_environment(; seed=seed, w_rated_val=w_rated_val, ls_val=ls_val, lt_val=lt_val)
         fn = STRATEGY_FNS[strategy_name]
         res = fn(env)
 
         # Compute heavy metrics in memory before garbage collection
-        rmse_global, clarity_deficit = compute_run_metrics(
-            res, env.synthetic_data, w_rated_val
-        )
+        rmse_global, clarity_deficit, gt_clarity_deficit = compute_run_metrics(res, env)
         meas = vec(res.measurements)
 
         # Save only the minimum reconstructable footprint
@@ -511,14 +540,15 @@ end
             measurements = meas,
             rmse_global = rmse_global,
             clarity_deficit = clarity_deficit,
-            xs = res.xs,       # Required for map reconstruction and plotting
-            us = res.us,       # Kinematic review
-            seed = seed,       # Required for map reconstruction
+            gt_clarity_deficit = gt_clarity_deficit,
+            xs = res.xs,       
+            us = res.us,       
+            seed = seed,       
             strategy = string(strategy_name)
         )
     end
 
-    return (seed, strategy_name, meas, rmse_global, clarity_deficit, w_rated_val, ls_val, lt_val)
+    return (seed, strategy_name, meas, rmse_global, clarity_deficit, gt_clarity_deficit, w_rated_val, ls_val, lt_val)
 end
 
 # =============================================================================
@@ -556,17 +586,20 @@ function main()
     measurements_dict    = Dict{Tuple{Symbol, Float64, Float64, Float64}, Vector{Float64}}()
     rmse_global_dict     = Dict{Tuple{Symbol, Float64, Float64, Float64}, Vector{Vector{Float64}}}()
     clarity_deficit_dict = Dict{Tuple{Symbol, Float64, Float64, Float64}, Vector{Vector{Float64}}}()
+    gt_clarity_deficit_dict = Dict{Tuple{Symbol, Float64, Float64, Float64}, Vector{Vector{Float64}}}()
 
     for s in strategies, w in w_rated_cmd, ls in ls_cmd, lt in lt_cmd
         measurements_dict[(s, w, ls, lt)] = Float64[]
         rmse_global_dict[(s, w, ls, lt)] = Vector{Float64}[]
         clarity_deficit_dict[(s, w, ls, lt)] = Vector{Float64}[]
+        gt_clarity_deficit_dict[(s, w, ls, lt)] = Vector{Float64}[]
     end
 
-    for (seed, strat, meas, rmse_g, deficit, w_val, ls_val, lt_val) in results
+    for (seed, strat, meas, rmse_g, deficit, gt_deficit, w_val, ls_val, lt_val) in results
         append!(measurements_dict[(strat, w_val, ls_val, lt_val)], meas)
         push!(rmse_global_dict[(strat, w_val, ls_val, lt_val)], rmse_g)
         push!(clarity_deficit_dict[(strat, w_val, ls_val, lt_val)], deficit)
+        push!(gt_clarity_deficit_dict[(strat, w_val, ls_val, lt_val)], gt_deficit)
     end
 
     allowable_buffer = 1.0
@@ -584,10 +617,11 @@ function main()
         # =========================================================================
         # VISUALIZATION 1: Violin Distributions (Grouped horizontally by Ls & Lt)
         # =========================================================================
-        fig_dist = Figure(size = (max(1200, 200 * length(ls_lt_combos)), 600))
+        fig_dist = Figure(size = (max(1600, 250 * length(ls_lt_combos)), 600))
         
         ax_rmse_v = Axis(fig_dist[1, 1], title = "Spatial RMSE Dist Across Seeds (W=$w)", xticks = (1:length(ls_lt_combos), ls_lt_labels))
-        ax_def_v  = Axis(fig_dist[1, 2], title = "Final Clarity Deficit Dist (W=$w)", xticks = (1:length(ls_lt_combos), ls_lt_labels))
+        ax_def_v  = Axis(fig_dist[1, 2], title = "Est Clarity Deficit (Mean) (W=$w)", xticks = (1:length(ls_lt_combos), ls_lt_labels))
+        ax_gt_def_v = Axis(fig_dist[1, 3], title = "GT Clarity Deficit (Mean) (W=$w)", xticks = (1:length(ls_lt_combos), ls_lt_labels))
 
         for (k, strat) in enumerate(strategies)
             for (c_idx, (ls, lt)) in enumerate(ls_lt_combos)
@@ -595,7 +629,10 @@ function main()
                 if isempty(rmse_series) continue end
                 
                 rmse_vals = [mean(s) for s in rmse_series]
-                def_vals  = [s[end] for s in clarity_deficit_dict[(strat, w, ls, lt)]]
+                
+                # Now tracking the run's time-averaged mean deficit per seed 
+                def_vals    = [mean(s) for s in clarity_deficit_dict[(strat, w, ls, lt)]]
+                gt_def_vals = [mean(s) for s in gt_clarity_deficit_dict[(strat, w, ls, lt)]]
                 
                 # Offset positions to visually 'dodge' grouping by strategy next to each length scale tick
                 x_pos = fill(c_idx + (k - length(strategies)/2 - 0.5) * 0.15, length(rmse_vals))
@@ -605,24 +642,28 @@ function main()
 
                 violin!(ax_def_v, x_pos, def_vals; color = (colors[k], 0.35), strokecolor = colors[k], width = 0.12)
                 scatter!(ax_def_v, x_pos .+ (rand(length(def_vals)).-0.5).*0.05, def_vals; color = colors[k], markersize = 6, strokewidth = 0.5, strokecolor = :black)
+                
+                violin!(ax_gt_def_v, x_pos, gt_def_vals; color = (colors[k], 0.35), strokecolor = colors[k], width = 0.12)
+                scatter!(ax_gt_def_v, x_pos .+ (rand(length(gt_def_vals)).-0.5).*0.05, gt_def_vals; color = colors[k], markersize = 6, strokewidth = 0.5, strokecolor = :black)
             end
         end
 
         elems = [PolyElement(polycolor = colors[k]) for k in 1:length(strategies)]
-        Legend(fig_dist[1, 3], elems, strategy_names_str, "Strategies")
+        Legend(fig_dist[1, 4], elems, strategy_names_str, "Strategies")
         
         save(joinpath(data_dir, "mc_metric_distributions_w$(w).png"), fig_dist)
 
         # =========================================================================
         # VISUALIZATION 2: Time-Series Ribbons (Gridded Matrix matching Ls / Lt)
         # =========================================================================
-        fig_ribbon = Figure(size = (500 * length(ls_cmd), 400 * length(lt_cmd)))
+        fig_ribbon = Figure(size = (500 * length(ls_cmd), 600 * length(lt_cmd)))
 
         for (i, lt) in enumerate(lt_cmd)
             for (j, ls) in enumerate(ls_cmd)
                 gl = fig_ribbon[i, j] = GridLayout()
-                ax_rmse_t = Axis(gl[1, 1], title = "RMSE (Ls=$ls, Lt=$lt)")
-                ax_def_t  = Axis(gl[2, 1], title = "Deficit (Ls=$ls, Lt=$lt)")
+                ax_rmse_t   = Axis(gl[1, 1], title = "RMSE (Ls=$ls, Lt=$lt)")
+                ax_def_t    = Axis(gl[2, 1], title = "Est Deficit (Ls=$ls, Lt=$lt)")
+                ax_gt_def_t = Axis(gl[3, 1], title = "GT Deficit (Ls=$ls, Lt=$lt)")
 
                 for (k, strat) in enumerate(strategies)
                     rmse_mat = hcat(rmse_global_dict[(strat, w, ls, lt)]...)
@@ -644,6 +685,15 @@ function main()
 
                     band!(ax_def_t, steps_q, q25_def_t, q75_def_t; color = (colors[k], 0.25))
                     lines!(ax_def_t, steps_q, med_def_t; color = colors[k], linewidth = 2, label = strategy_names_str[k])
+                    
+                    gt_def_mat = hcat(gt_clarity_deficit_dict[(strat, w, ls, lt)]...)
+                    steps_gt_q = 1:size(gt_def_mat, 1)
+                    med_gt_def_t = [median(gt_def_mat[step, :]) for step in steps_gt_q]
+                    q25_gt_def_t = [quantile(gt_def_mat[step, :], 0.25) for step in steps_gt_q]
+                    q75_gt_def_t = [quantile(gt_def_mat[step, :], 0.75) for step in steps_gt_q]
+
+                    band!(ax_gt_def_t, steps_gt_q, q25_gt_def_t, q75_gt_def_t; color = (colors[k], 0.25))
+                    lines!(ax_gt_def_t, steps_gt_q, med_gt_def_t; color = colors[k], linewidth = 2, label = strategy_names_str[k])
                 end
                 
                 # Show legend cleanly on the very first sub-grid instance
@@ -677,14 +727,14 @@ function main()
     # =========================================================================
     txt_report_path = joinpath(data_dir, "summary_table.txt")
     open(txt_report_path, "w") do f
-        println(f, "="^115)
+        println(f, "="^125)
         println(f, "MONTE CARLO SIMULATION SUMMARY TABLE")
         println(f, "Generated: $(Dates.format(Dates.now(), "yyyy-mm-dd HH:MM:SS"))")
-        println(f, "="^115)
+        println(f, "="^125)
         
-        @printf(f, "%-7s | %-5s | %-6s | %-16s | %-18s | %-15s | %-12s | %-10s\n",
-            "W_rated", "Ls", "Lt", "Strategy", "RMSE (Mean ± SEM)", "Final Deficit", "Mean Error", "In-Target")
-        println(f, "-"^115)
+        @printf(f, "%-7s | %-5s | %-6s | %-16s | %-18s | %-20s | %-20s | %-10s\n",
+            "W_rated", "Ls", "Lt", "Strategy", "RMSE (Mean ± SEM)", "Est Def (Mean±IQR)", "GT Def (Mean±IQR)", "In-Target")
+        println(f, "-"^125)
 
         for w in w_rated_cmd, ls in ls_cmd, lt in lt_cmd
             for (k, strat) in enumerate(strategies)
@@ -695,26 +745,34 @@ function main()
                 m_rmse_g = mean(seed_means)
                 sem_rmse_g = N_mc > 1 ? std(seed_means) / sqrt(N_mc) : 0.0
 
-                f_deficits = [s[end] for s in clarity_deficit_dict[(strat, w, ls, lt)]]
+                run_mean_def = [mean(s) for s in clarity_deficit_dict[(strat, w, ls, lt)]]
+                m_def = mean(run_mean_def)
+                iqr_def = N_mc > 1 ? quantile(run_mean_def, 0.75) - quantile(run_mean_def, 0.25) : 0.0
+                def_str = @sprintf("%.4f±%.4f", m_def, iqr_def)
+
+                run_mean_gt = [mean(s) for s in gt_clarity_deficit_dict[(strat, w, ls, lt)]]
+                m_gt = mean(run_mean_gt)
+                iqr_gt = N_mc > 1 ? quantile(run_mean_gt, 0.75) - quantile(run_mean_gt, 0.25) : 0.0
+                gt_str = @sprintf("%.4f±%.4f", m_gt, iqr_gt)
                 
                 errs = measurements_dict[(strat, w, ls, lt)] .- w
                 in_range = count(abs.(errs) .<= allowable_buffer) / max(1, length(errs))
 
                 rmse_str = @sprintf("%.4f ± %.4f", m_rmse_g, sem_rmse_g)
 
-                @printf(f, "%-7.2f | %-5.2f | %-6.2f | %-16s | %-18s | %-15.4f | %-12.4f | %-9.1f%%\n",
+                @printf(f, "%-7.2f | %-5.2f | %-6.2f | %-16s | %-18s | %-20s | %-20s | %-9.1f%%\n",
                     w, ls, lt, strategy_names_str[k],
-                    rmse_str, mean(f_deficits), mean(errs), in_range * 100.0
+                    rmse_str, def_str, gt_str, in_range * 100.0
                 )
             end
-            println(f, "-"^115) # Separator block between environmental combinations
+            println(f, "-"^125) # Separator block between environmental combinations
         end
-        println(f, "="^115)
+        println(f, "="^125)
     end
 
     csv_report_path = joinpath(data_dir, "summary_metrics.csv")
     open(csv_report_path, "w") do f
-        println(f, "W_Rated,Ls,Lt,Strategy,Global_RMSE_Mean,Global_RMSE_SEM,Global_RMSE_Median,Global_RMSE_Q25,Global_RMSE_Q75,Mean_Clarity_Deficit,Final_Deficit_Mean,Final_Deficit_Median,Final_Deficit_Q25,Final_Deficit_Q75,Error_Mean,Error_Std,Proportion_In_Target_Range")
+        println(f, "W_Rated,Ls,Lt,Strategy,Global_RMSE_Mean,Global_RMSE_SEM,Global_RMSE_Median,Global_RMSE_Q25,Global_RMSE_Q75,Est_Deficit_Mean,Est_Deficit_IQR,GT_Deficit_Mean,GT_Deficit_IQR,Error_Mean,Error_Std,Proportion_In_Target_Range")
         for w in w_rated_cmd, ls in ls_cmd, lt in lt_cmd, (k, strat) in enumerate(strategies)
             rmse_series = rmse_global_dict[(strat, w, ls, lt)]
             if isempty(rmse_series) continue end
@@ -723,18 +781,21 @@ function main()
             m_rmse_g = mean(seed_means)
             sem_rmse_g = N_mc > 1 ? std(seed_means) / sqrt(N_mc) : 0.0
 
-            def_matrix = hcat(clarity_deficit_dict[(strat, w, ls, lt)]...)
-            m_deficit = mean(vec(mean(def_matrix, dims=2)))
-            
-            f_deficits = [s[end] for s in clarity_deficit_dict[(strat, w, ls, lt)]]
+            run_mean_def = [mean(s) for s in clarity_deficit_dict[(strat, w, ls, lt)]]
+            m_def = mean(run_mean_def)
+            iqr_def = N_mc > 1 ? quantile(run_mean_def, 0.75) - quantile(run_mean_def, 0.25) : 0.0
+
+            run_mean_gt = [mean(s) for s in gt_clarity_deficit_dict[(strat, w, ls, lt)]]
+            m_gt = mean(run_mean_gt)
+            iqr_gt = N_mc > 1 ? quantile(run_mean_gt, 0.75) - quantile(run_mean_gt, 0.25) : 0.0
             
             errs = measurements_dict[(strat, w, ls, lt)] .- w
             in_range = count(abs.(errs) .<= allowable_buffer) / max(1, length(errs))
 
-            @printf(f, "%.2f,%.2f,%.2f,%s,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
+            @printf(f, "%.2f,%.2f,%.2f,%s,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
                 w, ls, lt, strategy_names_str[k],
                 m_rmse_g, sem_rmse_g, median(seed_means), quantile(seed_means, 0.25), quantile(seed_means, 0.75),
-                m_deficit, mean(f_deficits), median(f_deficits), quantile(f_deficits, 0.25), quantile(f_deficits, 0.75),
+                m_def, iqr_def, m_gt, iqr_gt,
                 mean(errs), std(errs), in_range
             )
         end

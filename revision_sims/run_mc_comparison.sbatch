@@ -62,6 +62,6 @@ julia --project run_monte_carlo_comparison.jl \
     --w_rated "$W_RATED_SWEEP" \
     --ls "$LS" \
     --lt "$LT" \
-    --strategies transect,ergo_nonadaptive,ergo_adaptive,bb_ipp \
+    --strategies transect,ergo_nonadaptive,ergo_adaptive,bb_ipp_nonadaptive,bb_ipp_adaptive \
     --outdir "$OUT_DIR" \
     --srcdir ../src

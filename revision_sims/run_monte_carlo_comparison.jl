@@ -1,6 +1,6 @@
 #!/usr/bin/env julia
 # =============================================================================
-# run_monte_carlo_comparison.jl (Storage-Optimized with Environment Caching)
+# run_monte_carlo_comparison.jl (Storage-Optimized with Environment Caching & Timing)
 # =============================================================================
 
 using Distributed, Dates, Printf, CairoMakie
@@ -598,21 +598,26 @@ end
         rmse_global = data["rmse_global"]
         clarity_deficit = data["clarity_deficit"]
         gt_clarity_deficit = get(data, "gt_clarity_deficit", clarity_deficit)
+        solve_time = get(data, "solve_time", 0.0)
     else
         env = build_environment(; seed=seed, w_rated_val=w_rated_val, ls_val=ls_val, lt_val=lt_val)
         fn = STRATEGY_FNS[strategy_name]
+        
+        t0 = time()
         res = fn(env)
+        solve_time = time() - t0
 
         # Compute heavy metrics in memory before garbage collection
         rmse_global, clarity_deficit, gt_clarity_deficit = compute_run_metrics(res, env)
         meas = vec(res.measurements)
 
-        # Save only the minimum reconstructable footprint
+        # Save minimum reconstructable footprint including solve time
         jldsave(outpath;
             measurements = meas,
             rmse_global = rmse_global,
             clarity_deficit = clarity_deficit,
             gt_clarity_deficit = gt_clarity_deficit,
+            solve_time = solve_time,
             xs = res.xs,       
             us = res.us,       
             seed = seed,       
@@ -620,7 +625,7 @@ end
         )
     end
 
-    return (seed, strategy_name, meas, rmse_global, clarity_deficit, gt_clarity_deficit, w_rated_val, ls_val, lt_val)
+    return (seed, strategy_name, meas, rmse_global, clarity_deficit, gt_clarity_deficit, solve_time, w_rated_val, ls_val, lt_val)
 end
 
 # =============================================================================
@@ -655,23 +660,26 @@ function main()
     results = pmap(run_task, tasks)
 
     # Pre-allocate dictionary arrays for all combinations
-    measurements_dict    = Dict{Tuple{Symbol, Float64, Float64, Float64}, Vector{Float64}}()
-    rmse_global_dict     = Dict{Tuple{Symbol, Float64, Float64, Float64}, Vector{Vector{Float64}}}()
-    clarity_deficit_dict = Dict{Tuple{Symbol, Float64, Float64, Float64}, Vector{Vector{Float64}}}()
+    measurements_dict       = Dict{Tuple{Symbol, Float64, Float64, Float64}, Vector{Float64}}()
+    rmse_global_dict        = Dict{Tuple{Symbol, Float64, Float64, Float64}, Vector{Vector{Float64}}}()
+    clarity_deficit_dict    = Dict{Tuple{Symbol, Float64, Float64, Float64}, Vector{Vector{Float64}}}()
     gt_clarity_deficit_dict = Dict{Tuple{Symbol, Float64, Float64, Float64}, Vector{Vector{Float64}}}()
+    solve_time_dict         = Dict{Tuple{Symbol, Float64, Float64, Float64}, Vector{Float64}}()
 
     for s in strategies, w in w_rated_cmd, ls in ls_cmd, lt in lt_cmd
         measurements_dict[(s, w, ls, lt)] = Float64[]
         rmse_global_dict[(s, w, ls, lt)] = Vector{Float64}[]
         clarity_deficit_dict[(s, w, ls, lt)] = Vector{Float64}[]
         gt_clarity_deficit_dict[(s, w, ls, lt)] = Vector{Float64}[]
+        solve_time_dict[(s, w, ls, lt)] = Float64[]
     end
 
-    for (seed, strat, meas, rmse_g, deficit, gt_deficit, w_val, ls_val, lt_val) in results
+    for (seed, strat, meas, rmse_g, deficit, gt_deficit, stime, w_val, ls_val, lt_val) in results
         append!(measurements_dict[(strat, w_val, ls_val, lt_val)], meas)
         push!(rmse_global_dict[(strat, w_val, ls_val, lt_val)], rmse_g)
         push!(clarity_deficit_dict[(strat, w_val, ls_val, lt_val)], deficit)
         push!(gt_clarity_deficit_dict[(strat, w_val, ls_val, lt_val)], gt_deficit)
+        push!(solve_time_dict[(strat, w_val, ls_val, lt_val)], stime)
     end
 
     allowable_buffer = 1.0
@@ -701,12 +709,9 @@ function main()
                 if isempty(rmse_series) continue end
                 
                 rmse_vals = [mean(s) for s in rmse_series]
-                
-                # Now tracking the run's time-averaged mean deficit per seed 
                 def_vals    = [mean(s) for s in clarity_deficit_dict[(strat, w, ls, lt)]]
                 gt_def_vals = [mean(s) for s in gt_clarity_deficit_dict[(strat, w, ls, lt)]]
                 
-                # Offset positions to visually 'dodge' grouping by strategy next to each length scale tick
                 x_pos = fill(c_idx + (k - length(strategies)/2 - 0.5) * 0.15, length(rmse_vals))
                 
                 violin!(ax_rmse_v, x_pos, rmse_vals; color = (colors[k], 0.35), strokecolor = colors[k], width = 0.12)
@@ -768,7 +773,6 @@ function main()
                     lines!(ax_gt_def_t, steps_gt_q, med_gt_def_t; color = colors[k], linewidth = 2, label = strategy_names_str[k])
                 end
                 
-                # Show legend cleanly on the very first sub-grid instance
                 if i == 1 && j == 1
                     axislegend(ax_rmse_t, position = :rt, framevisible = true)
                 end
@@ -799,14 +803,14 @@ function main()
     # =========================================================================
     txt_report_path = joinpath(data_dir, "summary_table.txt")
     open(txt_report_path, "w") do f
-        println(f, "="^125)
+        println(f, "="^140)
         println(f, "MONTE CARLO SIMULATION SUMMARY TABLE")
         println(f, "Generated: $(Dates.format(Dates.now(), "yyyy-mm-dd HH:MM:SS"))")
-        println(f, "="^125)
+        println(f, "="^140)
         
-        @printf(f, "%-7s | %-5s | %-6s | %-20s | %-18s | %-20s | %-20s | %-10s\n",
-            "W_rated", "Ls", "Lt", "Strategy", "RMSE (Mean ± SEM)", "Est Def (Mean±IQR)", "GT Def (Mean±IQR)", "In-Target")
-        println(f, "-"^125)
+        @printf(f, "%-7s | %-5s | %-6s | %-20s | %-18s | %-20s | %-20s | %-14s | %-10s\n",
+            "W_rated", "Ls", "Lt", "Strategy", "RMSE (Mean ± SEM)", "Est Def (Mean±IQR)", "GT Def (Mean±IQR)", "Solve Time (s)", "In-Target")
+        println(f, "-"^140)
 
         for w in w_rated_cmd, ls in ls_cmd, lt in lt_cmd
             for (k, strat) in enumerate(strategies)
@@ -826,25 +830,30 @@ function main()
                 m_gt = mean(run_mean_gt)
                 iqr_gt = N_mc > 1 ? quantile(run_mean_gt, 0.75) - quantile(run_mean_gt, 0.25) : 0.0
                 gt_str = @sprintf("%.4f±%.4f", m_gt, iqr_gt)
+
+                stimes = solve_time_dict[(strat, w, ls, lt)]
+                m_stime = mean(stimes)
+                std_stime = std(stimes)
+                time_str = @sprintf("%.2f±%.2f", m_stime, std_stime)
                 
                 errs = measurements_dict[(strat, w, ls, lt)] .- w
                 in_range = count(abs.(errs) .<= allowable_buffer) / max(1, length(errs))
 
                 rmse_str = @sprintf("%.4f ± %.4f", m_rmse_g, sem_rmse_g)
 
-                @printf(f, "%-7.2f | %-5.2f | %-6.2f | %-20s | %-18s | %-20s | %-20s | %-9.1f%%\n",
+                @printf(f, "%-7.2f | %-5.2f | %-6.2f | %-20s | %-18s | %-20s | %-20s | %-14s | %-9.1f%%\n",
                     w, ls, lt, strategy_names_str[k],
-                    rmse_str, def_str, gt_str, in_range * 100.0
+                    rmse_str, def_str, gt_str, time_str, in_range * 100.0
                 )
             end
-            println(f, "-"^125) # Separator block between environmental combinations
+            println(f, "-"^140)
         end
-        println(f, "="^125)
+        println(f, "="^140)
     end
 
     csv_report_path = joinpath(data_dir, "summary_metrics.csv")
     open(csv_report_path, "w") do f
-        println(f, "W_Rated,Ls,Lt,Strategy,Global_RMSE_Mean,Global_RMSE_SEM,Global_RMSE_Median,Global_RMSE_Q25,Global_RMSE_Q75,Est_Deficit_Mean,Est_Deficit_IQR,GT_Deficit_Mean,GT_Deficit_IQR,Error_Mean,Error_Std,Proportion_In_Target_Range")
+        println(f, "W_Rated,Ls,Lt,Strategy,Global_RMSE_Mean,Global_RMSE_SEM,Global_RMSE_Median,Global_RMSE_Q25,Global_RMSE_Q75,Est_Deficit_Mean,Est_Deficit_IQR,GT_Deficit_Mean,GT_Deficit_IQR,Solve_Time_Mean,Solve_Time_Std,Error_Mean,Error_Std,Proportion_In_Target_Range")
         for w in w_rated_cmd, ls in ls_cmd, lt in lt_cmd, (k, strat) in enumerate(strategies)
             rmse_series = rmse_global_dict[(strat, w, ls, lt)]
             if isempty(rmse_series) continue end
@@ -861,13 +870,17 @@ function main()
             m_gt = mean(run_mean_gt)
             iqr_gt = N_mc > 1 ? quantile(run_mean_gt, 0.75) - quantile(run_mean_gt, 0.25) : 0.0
             
+            stimes = solve_time_dict[(strat, w, ls, lt)]
+            m_stime = mean(stimes)
+            std_stime = std(stimes)
+
             errs = measurements_dict[(strat, w, ls, lt)] .- w
             in_range = count(abs.(errs) .<= allowable_buffer) / max(1, length(errs))
-
-            @printf(f, "%.2f,%.2f,%.2f,%s,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
+            
+            @printf(f, "%.2f,%.2f,%.2f,%s,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
                 w, ls, lt, strategy_names_str[k],
                 m_rmse_g, sem_rmse_g, median(seed_means), quantile(seed_means, 0.25), quantile(seed_means, 0.75),
-                m_def, iqr_def, m_gt, iqr_gt,
+                m_def, iqr_def, m_gt, iqr_gt, m_stime, std_stime,
                 mean(errs), std(errs), in_range
             )
         end

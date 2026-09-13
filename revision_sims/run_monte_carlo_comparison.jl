@@ -704,48 +704,97 @@ function main()
         push!(error_dict[(strat, w_val, ls_val, lt_val)], err)
     end
 
-    # Export CSV Report
+    # Export CSV and TXT Reports
     csv_report_path = joinpath(data_dir, "summary_metrics.csv")
-    open(csv_report_path, "w") do f
-        println(f, "W_Rated,Ls,Lt,Strategy,Global_RMSE_Mean,Global_RMSE_SEM,Est_Deficit_Mean,Est_Deficit_IQR,GT_Deficit_Mean,GT_Deficit_IQR,Est_Target_RMSE_Mean,Est_Target_RMSE_SEM,GT_Target_RMSE_Mean,GT_Target_RMSE_SEM,Solve_Time_Mean,Error_Mean,Proportion_In_Target_Range")
-        
-        for w in w_rated_cmd, ls in ls_cmd, lt in lt_cmd, (k, strat) in enumerate(strategies)
+    txt_report_path = joinpath(data_dir, "summary_table.txt")
+    
+    open(csv_report_path, "w") do f_csv
+        open(txt_report_path, "w") do f_txt
+            # --- Headers ---
+            # CSV Header
+            println(f_csv, "W_Rated,Ls,Lt,Strategy,Global_RMSE_Mean,Global_RMSE_SEM,Est_Deficit_Mean,Est_Deficit_IQR,GT_Deficit_Mean,GT_Deficit_IQR,Est_Target_RMSE_Mean,Est_Target_RMSE_SEM,GT_Target_RMSE_Mean,GT_Target_RMSE_SEM,Solve_Time_Mean,Error_Mean,Proportion_In_Target_Range")
             
-            run_mean_rmse_g = [mean(s) for s in rmse_dict[(strat, w, ls, lt)]]
-            m_rmse_g = isempty(run_mean_rmse_g) ? 0.0 : mean(run_mean_rmse_g)
-            sem_rmse_g = isempty(run_mean_rmse_g) ? 0.0 : std(run_mean_rmse_g) / sqrt(length(run_mean_rmse_g))
+            # TXT Table Header
+            current_time = Dates.format(Dates.now(), "yyyy-mm-dd HH:MM:SS")
+            println(f_txt, "="^140)
+            println(f_txt, "MONTE CARLO SIMULATION SUMMARY TABLE")
+            println(f_txt, "Generated: $current_time")
+            println(f_txt, "="^140)
+            @printf(f_txt, "%-7s | %-5s | %-6s | %-20s | %-18s | %-20s | %-20s | %-14s | %-10s\n", 
+                "W_rated", "Ls", "Lt", "Strategy", "RMSE (Mean ± SEM)", "Est Def (Mean±IQR)", "GT Def (Mean±IQR)", "Solve Time (s)", "In-Target")
+            println(f_txt, "-"^140)
+            
+            # Grouping visually by W_rated
+            for (i_w, w) in enumerate(w_rated_cmd)
+                for ls in ls_cmd, lt in lt_cmd, strat in strategies
+                    
+                    # RMSE
+                    run_mean_rmse_g = [mean(s) for s in rmse_dict[(strat, w, ls, lt)]]
+                    m_rmse_g = isempty(run_mean_rmse_g) ? 0.0 : mean(run_mean_rmse_g)
+                    sem_rmse_g = length(run_mean_rmse_g) > 1 ? std(run_mean_rmse_g) / sqrt(length(run_mean_rmse_g)) : 0.0
 
-            run_mean_def = [mean(s) for s in clarity_deficit_dict[(strat, w, ls, lt)]]
-            m_def = isempty(run_mean_def) ? 0.0 : mean(run_mean_def)
-            iqr_def = isempty(run_mean_def) ? 0.0 : (quantile(run_mean_def, 0.75) - quantile(run_mean_def, 0.25))
+                    # Estimated Deficit
+                    run_mean_def = [mean(s) for s in clarity_deficit_dict[(strat, w, ls, lt)]]
+                    m_def = isempty(run_mean_def) ? 0.0 : mean(run_mean_def)
+                    iqr_def = isempty(run_mean_def) ? 0.0 : (quantile(run_mean_def, 0.75) - quantile(run_mean_def, 0.25))
 
-            run_mean_gt = [mean(s) for s in gt_clarity_deficit_dict[(strat, w, ls, lt)]]
-            m_gt = isempty(run_mean_gt) ? 0.0 : mean(run_mean_gt)
-            iqr_gt = isempty(run_mean_gt) ? 0.0 : (quantile(run_mean_gt, 0.75) - quantile(run_mean_gt, 0.25))
+                    # Ground Truth Deficit
+                    run_mean_gt = [mean(s) for s in gt_clarity_deficit_dict[(strat, w, ls, lt)]]
+                    m_gt = isempty(run_mean_gt) ? 0.0 : mean(run_mean_gt)
+                    iqr_gt = isempty(run_mean_gt) ? 0.0 : (quantile(run_mean_gt, 0.75) - quantile(run_mean_gt, 0.25))
 
-            # New Calculations for Target RMSE
-            run_mean_t_rmse = [mean(s) for s in target_rmse_dict[(strat, w, ls, lt)]]
-            m_t_rmse = isempty(run_mean_t_rmse) ? 0.0 : mean(run_mean_t_rmse)
-            sem_t_rmse = isempty(run_mean_t_rmse) ? 0.0 : std(run_mean_t_rmse) / sqrt(length(run_mean_t_rmse))
+                    # Target RMSE (CSV Only calculations)
+                    run_mean_t_rmse = [mean(s) for s in target_rmse_dict[(strat, w, ls, lt)]]
+                    m_t_rmse = isempty(run_mean_t_rmse) ? 0.0 : mean(run_mean_t_rmse)
+                    sem_t_rmse = length(run_mean_t_rmse) > 1 ? std(run_mean_t_rmse) / sqrt(length(run_mean_t_rmse)) : 0.0
 
-            run_mean_gt_t_rmse = [mean(s) for s in gt_target_rmse_dict[(strat, w, ls, lt)]]
-            m_gt_t_rmse = isempty(run_mean_gt_t_rmse) ? 0.0 : mean(run_mean_gt_t_rmse)
-            sem_gt_t_rmse = isempty(run_mean_gt_t_rmse) ? 0.0 : std(run_mean_gt_t_rmse) / sqrt(length(run_mean_gt_t_rmse))
+                    run_mean_gt_t_rmse = [mean(s) for s in gt_target_rmse_dict[(strat, w, ls, lt)]]
+                    m_gt_t_rmse = isempty(run_mean_gt_t_rmse) ? 0.0 : mean(run_mean_gt_t_rmse)
+                    sem_gt_t_rmse = length(run_mean_gt_t_rmse) > 1 ? std(run_mean_gt_t_rmse) / sqrt(length(run_mean_gt_t_rmse)) : 0.0
 
-            m_stime = isempty(solve_time_dict[(strat, w, ls, lt)]) ? 0.0 : mean(solve_time_dict[(strat, w, ls, lt)])
-            errs = error_dict[(strat, w, ls, lt)]
-            in_range = isempty(errs) ? 0.0 : count(x -> x < 1.0, errs) / length(errs)
+                    # Solve Time
+                    stimes = solve_time_dict[(strat, w, ls, lt)]
+                    m_stime = isempty(stimes) ? 0.0 : mean(stimes)
+                    std_stime = length(stimes) > 1 ? std(stimes) : 0.0
 
-            @printf(f, "%.2f,%.2f,%.2f,%s,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
-                w, ls, lt, strategy_names[strat],
-                m_rmse_g, sem_rmse_g, 
-                m_def, iqr_def, m_gt, iqr_gt, 
-                m_t_rmse, sem_t_rmse, m_gt_t_rmse, sem_gt_t_rmse, 
-                m_stime, isempty(errs) ? 0.0 : mean(errs), in_range
-            )
+                    # Error Rates & Target In-Range
+                    errs = error_dict[(strat, w, ls, lt)]
+                    err_mean = isempty(errs) ? 0.0 : mean(errs)
+                    in_range = isempty(errs) ? 0.0 : count(x -> x < 1.0, errs) / length(errs)
+                    in_range_pct = in_range * 100.0
+
+                    # --- Write to CSV ---
+                    @printf(f_csv, "%.2f,%.2f,%.2f,%s,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
+                        w, ls, lt, strategy_names[strat],
+                        m_rmse_g, sem_rmse_g, 
+                        m_def, iqr_def, m_gt, iqr_gt, 
+                        m_t_rmse, sem_t_rmse, m_gt_t_rmse, sem_gt_t_rmse, 
+                        m_stime, err_mean, in_range
+                    )
+                    
+                    # --- Write to TXT ---
+                    str_rmse = @sprintf("%.4f \u00B1 %.4f", m_rmse_g, sem_rmse_g)
+                    str_est_def = @sprintf("%.4f\u00B1%.4f", m_def, iqr_def)
+                    str_gt_def = @sprintf("%.4f\u00B1%.4f", m_gt, iqr_gt)
+                    str_time = @sprintf("%.2f\u00B1%.2f", m_stime, std_stime)
+                    str_pct = @sprintf("%.1f     %%", in_range_pct)
+
+                    @printf(f_txt, "%-7.2f | %-5.2f | %-6.2f | %-20s | %-18s | %-20s | %-20s | %-14s | %-10s\n",
+                        w, ls, lt, string(strat), str_rmse, str_est_def, str_gt_def, str_time, str_pct)
+                end
+                
+                # Append visual separator after every block of W_rated
+                if i_w < length(w_rated_cmd)
+                    println(f_txt, "-"^140)
+                end
+            end
+            
+            # Close out table
+            println(f_txt, "-"^140)
+            println(f_txt, "="^140)
         end
     end
-    println("Report saved to $csv_report_path")
+    println("Reports saved to $csv_report_path and $txt_report_path")
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__

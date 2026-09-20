@@ -19,7 +19,7 @@ function parse_args(args)
         "w_rated"    => "-3.5",
         "ls"         => "0.75",
         "lt"         => "45.0",
-        "strategies" => "transect,bb_ipp_nonadaptive,bb_ipp_adaptive,ergo_nonadaptive,ergo_adaptive",
+        "strategies" => "transect,bb_ipp_nonadaptive,bb_ipp_adaptive,ergo_nonadaptive,ergo_adaptive,ergo_ground_truth",
         "outdir"     => "results",
         "srcdir"     => joinpath(@__DIR__, "../", "src"),
     )
@@ -308,6 +308,41 @@ end
         return res
     end
 
+    # 4. Ground Truth Adaptive Ergodic Mission
+    function ground_truth_wind_map(env, t)
+        truth_idx = clamp(
+            round(Int, (t - env.ts_min[1]) / env.dt_min) + 1,
+            1,
+            size(env.synthetic_data.data, 3)
+        )
+        return env.synthetic_data.data[:, :, truth_idx]
+    end
+
+    function make_ground_truth_ergo_controller(env)
+        return function (t, xs, Mean, w_rated_val, convex_polygon;
+                ergo_grid, ergo_q_map, traj, umax=0.15, ΔT, kwargs...)
+            truth_wind = ground_truth_wind_map(env, t)
+            target_spatial_dist, q_target_temp = compute_target_spatial_dist(
+                truth_wind, ergo_q_map, w_rated_val, convex_polygon, ergo_grid, env)
+            u = [ErgodicController.controller_single_integrator_cvx_bound(
+                    ergo_grid, x, traj, target_spatial_dist, convex_polygon;
+                    umax=umax, do_boundary_correction=true) for x in xs]
+            return u, q_target_temp
+        end
+    end
+
+    function run_ergo_ground_truth(env)
+        controller = make_ground_truth_ergo_controller(env)
+        res = SimulatorST.simulate_known_param(
+            env.ts_min, env.x0s, env.soc_begin, controller, env.soc_target,
+            env.w_rated_val, env.convex_polygon, env.problem;
+            ngpkf_grid=env.ngpkf_grid, EnvData=env.synthetic_data, σ_meas=env.σ_meas,
+            Q_process=diagm(vec(env.σ_t .^ 2 .* env.fuse_measurements_every_ΔT)),
+            fuse_measurements_every_ΔT=env.fuse_measurements_every_ΔT,
+            recompute_controller_every_ΔT=env.recompute_controller_every_ΔT)
+        return res
+    end
+
     # Branch & Bound Primitive Dynamics
     struct MotionPrimitive
         dtheta::Float64
@@ -525,6 +560,7 @@ end
     :bb_ipp_adaptive    => run_bb_ipp_adaptive,
     :ergo_nonadaptive   => run_ergo_nonadaptive,
     :ergo_adaptive      => run_ergo_adaptive,
+    :ergo_ground_truth  => run_ergo_ground_truth,
 )
 
 # =============================================================================
@@ -648,6 +684,202 @@ end
     end
 
     return (seed, strategy_name, meas, rmse_global, clarity_deficit, gt_clarity_deficit, est_clarity_rmse, gt_clarity_rmse, target_clarity_rmse, solve_time, w_rated_val, ls_val, lt_val)
+end
+
+function build_plot_rows(strategies, w_rated_cmd, ls_cmd, lt_cmd, N_mc,
+        measurements_dict, rmse_global_dict, gt_clarity_deficit_dict)
+    rows = NamedTuple[]
+    sem_calc(values) = length(values) > 1 ? std(values) / sqrt(length(values)) : 0.0
+
+    for w in w_rated_cmd, ls in ls_cmd, lt in lt_cmd, strat in strategies
+        key = (strat, w, ls, lt)
+        rmse_runs = rmse_global_dict[key]
+        gt_def_runs = gt_clarity_deficit_dict[key]
+        isempty(rmse_runs) && continue
+
+        rmse_values = [mean(run) for run in rmse_runs]
+        gt_def_values = [mean(run) for run in gt_def_runs]
+        errors = measurements_dict[key] .- w
+        in_target = count(abs.(errors) .<= 1.0) / max(1, length(errors)) * 100.0
+
+        push!(rows, (; strategy=string(strat), w_rated=w, ls, lt,
+            rmse=mean(rmse_values), rmse_sem=sem_calc(rmse_values),
+            gt_def=mean(gt_def_values), gt_def_sem=sem_calc(gt_def_values),
+            in_target))
+    end
+    return rows
+end
+
+function plot_summary_outputs(rows, strategies, w_rated_cmd, ls_cmd, lt_cmd, output_dir)
+    isempty(rows) && return
+    mkpath(output_dir)
+
+    labels = Dict(
+        "transect" => "Transect",
+        "ergo_nonadaptive" => "Ergodic (Non-Adaptive)",
+        "ergo_adaptive" => "Ergodic (Adaptive)",
+        "ergo_ground_truth" => "Ergodic (Ground Truth)",
+        "bb_ipp_nonadaptive" => "BB-IPP (Non-Adaptive)",
+        "bb_ipp_adaptive" => "BB-IPP (Adaptive)",
+    )
+    colors = Dict(
+        "transect" => RGBf(0.4, 0.4, 0.4),
+        "ergo_nonadaptive" => RGBf(0.2, 0.5, 0.8),
+        "ergo_adaptive" => RGBf(0.0, 0.2, 0.8),
+        "ergo_ground_truth" => RGBf(0.0, 0.6, 0.35),
+        "bb_ipp_nonadaptive" => RGBf(0.8, 0.4, 0.1),
+        "bb_ipp_adaptive" => RGBf(0.8, 0.1, 0.0),
+    )
+    markers = Dict(
+        "transect" => :rect,
+        "ergo_nonadaptive" => :circle,
+        "ergo_adaptive" => :diamond,
+        "ergo_ground_truth" => :hexagon,
+        "bb_ipp_nonadaptive" => :utriangle,
+        "bb_ipp_adaptive" => :star5,
+    )
+    strategy_strings = string.(strategies)
+    plot_rows(strat; w=nothing, ls=nothing, lt=nothing) = [
+        row for row in rows
+        if row.strategy == strat &&
+           (w === nothing || row.w_rated == w) &&
+           (ls === nothing || row.ls == ls) &&
+           (lt === nothing || row.lt == lt)
+    ]
+    metric_values(strat, metric; w=nothing, ls=nothing, lt=nothing) = [
+        getproperty(row, metric) for row in plot_rows(strat; w, ls, lt)
+    ]
+    condition_value(strat, w, ls, lt, metric) = begin
+        selected = plot_rows(strat; w, ls, lt)
+        isempty(selected) ? NaN : getproperty(first(selected), metric)
+    end
+    x_positions = 1:length(w_rated_cmd)
+    x_labels = string.(w_rated_cmd)
+    line_style(strat) = contains(strat, "nonadaptive") ? :dash :
+        strat == "transect" ? :dot : :solid
+    line_width(strat) = contains(strat, "adaptive") ? 2.5 : 1.5
+
+    # Figure 1: adaptation gain.
+    fig = Figure(size=(1200, 500), fontsize=13)
+    for (col, (title, nonadaptive, adaptive)) in enumerate([
+            ("Ergodic Planner", "ergo_nonadaptive", "ergo_adaptive"),
+            ("BB-IPP Planner", "bb_ipp_nonadaptive", "bb_ipp_adaptive")])
+        ax = Axis(fig[1, col], title=title,
+            xlabel="Rated Wind Speed (W_rated)",
+            ylabel=col == 1 ? "In-Target % (mean ± SEM across Ls, Lt)" : "",
+            xticks=(x_positions, x_labels), yminorgridvisible=true)
+        for (strat, style) in [(nonadaptive, :dash), (adaptive, :solid)]
+            means = [mean(metric_values(strat, :in_target; w)) for w in w_rated_cmd]
+            sems = [begin
+                values = [row.in_target for row in plot_rows(strat; w)]
+                length(values) > 1 ? std(values) / sqrt(length(values)) : 0.0
+            end for w in w_rated_cmd]
+            lines!(ax, x_positions, means; color=colors[strat], linestyle=style, linewidth=2)
+            scatter!(ax, x_positions, means; color=colors[strat], marker=markers[strat],
+                markersize=10, label=labels[strat])
+            errorbars!(ax, x_positions, means, sems; color=colors[strat], whiskerwidth=8)
+        end
+        axislegend(ax, position=:lb, framevisible=true, labelsize=11)
+    end
+    save(joinpath(output_dir, "fig1_adaptation_gain.pdf"), fig)
+    save(joinpath(output_dir, "fig1_adaptation_gain.png"), fig, px_per_unit=2)
+
+    # Figure 2: BB-IPP adaptive minus adaptive ergodic in-target percentage.
+    fig = Figure(size=(max(1100, 260 * length(w_rated_cmd)), 300), fontsize=13)
+    for (wi, w) in enumerate(w_rated_cmd)
+        ax = Axis(fig[1, wi], title="W_rated = $w",
+            xlabel=wi == cld(length(w_rated_cmd), 2) ? "Lt (min)" : "",
+            ylabel=wi == 1 ? "Ls (km)" : "",
+            xticks=(1:length(lt_cmd), string.(lt_cmd)),
+            yticks=(1:length(ls_cmd), string.(ls_cmd)))
+        data = [condition_value("bb_ipp_adaptive", w, ls, lt, :in_target) -
+                condition_value("ergo_adaptive", w, ls, lt, :in_target)
+                for ls in ls_cmd, lt in lt_cmd]
+        hm = heatmap!(ax, data; colormap=:RdBu,
+            colorrange=(-max(maximum(abs.(filter(isfinite, vec(data)))), 0.1),
+                        max(maximum(abs.(filter(isfinite, vec(data)))), 0.1)))
+        for li in eachindex(ls_cmd), ti in eachindex(lt_cmd)
+            isfinite(data[li, ti]) || continue
+            text!(ax, ti, li; text=@sprintf("%+.1f", data[li, ti]),
+                align=(:center, :center), fontsize=11,
+                color=abs(data[li, ti]) > 0.6 * maximum(abs.(filter(isfinite, vec(data)))) ? :white : :black)
+        end
+        wi == length(w_rated_cmd) && Colorbar(fig[1, wi + 1], hm,
+            label="BB-IPP - Ergodic\nIn-Target (pp)", labelsize=11)
+    end
+    save(joinpath(output_dir, "fig2_adaptive_comparison_heatmap.pdf"), fig)
+    save(joinpath(output_dir, "fig2_adaptive_comparison_heatmap.png"), fig, px_per_unit=2)
+
+    # Figures 3-7 share the same strategy styles and condition aggregation.
+    plot_metric(strategies_to_plot, metric, error_metric, title, ylabel, filename) = begin
+        fig = Figure(size=(800, 500), fontsize=13)
+        ax = Axis(fig[1, 1], title=title, xlabel="Rated Wind Speed (W_rated)",
+            ylabel=ylabel, xticks=(x_positions, x_labels), yminorgridvisible=true)
+        for strat in strategies_to_plot
+            color = colors[strat]
+            for ls in ls_cmd, lt in lt_cmd
+                values = [condition_value(strat, w, ls, lt, metric) for w in w_rated_cmd]
+                lines!(ax, x_positions, values; color=(color, 0.15),
+                    linestyle=line_style(strat), linewidth=1)
+            end
+            means = [begin
+                values = [row for row in rows if row.strategy == strat && row.w_rated == w]
+                isempty(values) ? NaN : mean(getproperty.(values, metric))
+            end for w in w_rated_cmd]
+            errors = [begin
+                values = [getproperty(row, error_metric) for row in rows
+                    if row.strategy == strat && row.w_rated == w]
+                isempty(values) ? 0.0 : sqrt(sum(values .^ 2)) / length(values)
+            end for w in w_rated_cmd]
+            lines!(ax, x_positions, means; color, linestyle=line_style(strat),
+                linewidth=line_width(strat), label=labels[strat])
+            scatter!(ax, x_positions, means; color, marker=markers[strat], markersize=9)
+            errorbars!(ax, x_positions, means, errors; color, whiskerwidth=6)
+        end
+        axislegend(ax, position=:rt, framevisible=true, labelsize=10)
+        save(joinpath(output_dir, filename * ".pdf"), fig)
+        save(joinpath(output_dir, filename * ".png"), fig, px_per_unit=2)
+    end
+
+    plot_metric(strategy_strings, :rmse, :rmse_sem,
+        "Global RMSE: Strategy Comparison Across Rated Wind Speeds",
+        "RMSE (mean ± SEM)", "fig3_rmse_comparison")
+    plot_metric(strategy_strings, :gt_def, :gt_def_sem,
+        "Clarity Deficit (Ground Truth): Strategy Comparison",
+        "GT Deficit (mean ± SEM)", "fig6_deficit_comparison")
+
+    plot_grid(metric, title, ylabel, filename) = begin
+        fig = Figure(size=(1100, 950), fontsize=12)
+        Label(fig[0, 1:length(lt_cmd)], title, fontsize=15, font=:bold)
+        for (ri, ls) in enumerate(ls_cmd), (ci, lt) in enumerate(lt_cmd)
+            ax = Axis(fig[ri, ci], title="Ls=$(ls) km, Lt=$(Int(lt)) min",
+                xlabel=ci == cld(length(lt_cmd), 2) && ri == length(ls_cmd) ? "W_rated" : "",
+                ylabel=ci == 1 ? ylabel : "", xticks=(x_positions, x_labels),
+                yminorgridvisible=true)
+            for strat in strategy_strings
+                values = [condition_value(strat, w, ls, lt, metric) for w in w_rated_cmd]
+                lines!(ax, x_positions, values; color=colors[strat],
+                    linestyle=line_style(strat), linewidth=line_width(strat))
+                scatter!(ax, x_positions, values; color=colors[strat],
+                    marker=markers[strat], markersize=8)
+            end
+        end
+        legend_elements = [LineElement(color=colors[s], linestyle=line_style(s),
+            linewidth=2) for s in strategy_strings]
+        Legend(fig[length(ls_cmd) + 1, 1:length(lt_cmd)], legend_elements,
+            [labels[s] for s in strategy_strings], orientation=:horizontal,
+            framevisible=true, labelsize=10)
+        save(joinpath(output_dir, filename * ".pdf"), fig)
+        save(joinpath(output_dir, filename * ".png"), fig, px_per_unit=2)
+    end
+
+    plot_grid(:in_target, "In-Target % by Strategy, W_rated, Ls, and Lt",
+        "In-Target %", "fig4_full_grid")
+    plot_grid(:rmse, "Global RMSE by Strategy, W_rated, Ls, and Lt",
+        "RMSE", "fig5_rmse_full_grid")
+    plot_grid(:gt_def, "Clarity Deficit (Ground Truth) by Strategy, W_rated, Ls, and Lt",
+        "GT Deficit", "fig7_deficit_full_grid")
+    println("Comparison plots saved to: ", output_dir)
 end
 
 # =============================================================================
@@ -798,11 +1030,29 @@ function main()
             )
         end
     end
+
+    plot_rows = build_plot_rows(
+        strategies, w_rated_cmd, ls_cmd, lt_cmd, N_mc,
+        measurements_dict, rmse_global_dict, gt_clarity_deficit_dict)
+    plot_data_path = joinpath(data_dir, "plot_summary_data.csv")
+    open(plot_data_path, "w") do f
+        println(f, "Strategy,W_Rated,Ls,Lt,RMSE_Mean,RMSE_SEM,GT_Deficit_Mean,GT_Deficit_SEM,In_Target_Percent")
+        for row in plot_rows
+            @printf(f, "%s,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
+                row.strategy, row.w_rated, row.ls, row.lt, row.rmse, row.rmse_sem,
+                row.gt_def, row.gt_def_sem, row.in_target)
+        end
+    end
+
+    figures_dir = joinpath(data_dir, "figures")
+    plot_summary_outputs(plot_rows, strategies, w_rated_cmd, ls_cmd, lt_cmd, figures_dir)
     
     wall_runtime_sec = time() - T_START_WALL
     println("\nSweep Complete! Total Wall Runtime: ", round(wall_runtime_sec, digits=2), " seconds")
     println("Summary metrics CSV saved to: ", csv_report_path)
     println("Summary ASCII Table saved to: ", txt_report_path)
+    println("Plot statistics CSV saved to: ", plot_data_path)
+    println("Comparison figures saved to: ", figures_dir)
     println("="^80)
 end
 

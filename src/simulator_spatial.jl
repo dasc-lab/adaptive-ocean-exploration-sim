@@ -19,7 +19,6 @@ end
 
 returns a SVector of the [wx, wy] at time t, and pos p by querying the data 
 """
-
 function measure(t, p::SV, data::EDS; σ_meas=0, Q_meas=σ_meas * I) where {EDS<:EnvDataSpatial,SV<:SVector{2}}
 
   y = data(p...) + (σ_meas * randn(1))[1]

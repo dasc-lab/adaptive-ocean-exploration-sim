@@ -1,26 +1,32 @@
 #!/usr/bin/env julia
 # =============================================================================
-# run_monte_carlo_comparison.jl (Unified Mission Comparisons & Visualizations)
+# run_single_env_comparison.jl (Single Moving-Pocket Environment Comparison)
 # =============================================================================
 
 using Distributed, Dates, Printf, CairoMakie
+include(joinpath(@__DIR__, "half_domain_diagnostics.jl"))
 
 const SCRIPT_START_TIME = Dates.now()
 const T_START_WALL = time()
 
 # ---- Arg Parsing -----------------------------------------------------------
+# Example: julia --project=. revision_sims/run_single_env_comparison.jl --w_rated -3.5 --wind_offset 6.0
+# The background is rated + offset; slowly moving pockets approach rated wind.
+# ls/lt are fixed estimator hyperparameters, not truth-field correlation scales.
 const N_STRATEGIES_DEFAULT = 7
 
 function parse_args(args)
     opts = Dict{String,String}(
         "nworkers"   => string(N_STRATEGIES_DEFAULT),
-        "num_mc"     => "5",
-        "base_seed"  => "1234",
+        "seed"  => "1234",
         "w_rated"    => "-3.5",
+        "wind_offset" => "6.0",
+        "animation_seconds" => "30",
+        "animation_fps" => "10",
         "ls"         => "0.75",
         "lt"         => "45.0",
         "strategies" => "transect,bb_ipp_nonadaptive,bb_ipp_adaptive,bb_ipp_ground_truth,ergo_nonadaptive,ergo_adaptive,ergo_ground_truth",
-        "outdir"     => "results",
+        "outdir"     => "results_single_env",
         "srcdir"     => joinpath(@__DIR__, "../", "src"),
     )
     i = 1
@@ -30,7 +36,7 @@ function parse_args(args)
             opts[key] = args[i+1]
             i += 2
         else
-            i += 1
+            error("Unknown option or missing value: $(args[i])")
         end
     end
     return opts
@@ -39,20 +45,32 @@ end
 opts = parse_args(ARGS)
 strategies = Symbol.(split(opts["strategies"], ","))
 
-# Parse sweep arrays
-w_rated_cmd = parse.(Float64, split(opts["w_rated"], ","))
-ls_cmd = parse.(Float64, split(opts["ls"], ","))
-lt_cmd = parse.(Float64, split(opts["lt"], ","))
-
+# Scalar parameters deliberately reject comma-separated sweeps.
+w_rated_val = parse(Float64, opts["w_rated"])
+wind_offset = parse(Float64, opts["wind_offset"])
+ls_val = parse(Float64, opts["ls"])
+lt_val = parse(Float64, opts["lt"])
+animation_seconds = parse(Float64, opts["animation_seconds"])
+animation_fps = parse(Int, opts["animation_fps"])
+0 < animation_seconds <= 30 || error("animation_seconds must be in (0, 30]")
+animation_fps > 0 || error("animation_fps must be positive")
+floor(Int, animation_seconds * animation_fps) >= 2 || error("Animation needs at least two frames")
+seed = parse(Int, opts["seed"])
 nworkers_requested = parse(Int, opts["nworkers"])
-num_mc = parse(Int, opts["num_mc"])
-base_seed = parse(Int, opts["base_seed"])
-seeds = base_seed:(base_seed + num_mc - 1)
+all(isfinite, (w_rated_val, wind_offset, ls_val, lt_val)) || error("Parameters must be finite")
+abs(wind_offset) > 1.0 || error("wind_offset must lie outside the ±1 normalized wind speed target band")
+ls_val > 0 && lt_val > 0 || error("ls and lt must be positive")
+nworkers_requested >= 0 || error("nworkers must be nonnegative")
+supported = Set([:transect, :bb_ipp_nonadaptive, :bb_ipp_adaptive, :bb_ipp_ground_truth,
+    :ergo_nonadaptive, :ergo_adaptive, :ergo_ground_truth])
+!isempty(strategies) && all(s -> s in supported, strategies) || error("Unknown strategy")
+length(unique(strategies)) == length(strategies) || error("Duplicate strategies")
 SCRIPT_SRC_DIR = abspath(opts["srcdir"])
 
-if nprocs() == 1
-    total_tasks = length(seeds) * length(strategies) * length(w_rated_cmd) * length(ls_cmd) * length(lt_cmd)
-    addprocs(min(nworkers_requested, total_tasks); exename=joinpath(Sys.BINDIR, "julia"))
+if nprocs() == 1 && nworkers_requested > 0
+    addprocs(min(nworkers_requested, length(strategies));
+        exename=joinpath(Sys.BINDIR, "julia"),
+        exeflags=`--project=$(dirname(Base.active_project()))`)
 end
 
 @everywhere SRC_DIR = $SCRIPT_SRC_DIR
@@ -81,23 +99,50 @@ end
 end
 
 # =============================================================================
-# Environment & Controller Definitions (With Worker-Level Caching)
+# Deterministic ground truth with slowly moving normalized-windspeed pockets.
 # =============================================================================
-@everywhere const ENV_CACHE = Dict{Tuple{Int, Float64, Float64}, Any}()
+@everywhere struct MovingPocketWind
+    rated::Float64
+    background::Float64
+    t0::Float64
+end
 
-@everywhere function get_base_environment(; seed=1234, ls_val=0.75, lt_val=45.0)
-    key = (seed, ls_val, lt_val)
-    if haskey(ENV_CACHE, key)
-        return ENV_CACHE[key]
+@everywhere function (wind::MovingPocketWind)(x, y, t)
+    elapsed = t - wind.t0
+
+    # Each center follows a small, slow loop. Periods are deliberately longer
+    # than an hour so the pockets drift instead of jumping between time steps.
+    centers = (
+        (0.42 + 0.10cospi(2elapsed / 300), 0.45 + 0.08sinpi(2elapsed / 300), 0.18),
+        (0.55 + 0.08sinpi(2elapsed / 420), 1.38 + 0.12cospi(2elapsed / 420), 0.20),
+        (1.15 + 0.14cospi(2elapsed / 360), 1.02 + 0.10sinpi(2elapsed / 360), 0.24),
+    )
+
+    # Gaussian pockets pull the background wind toward the rated value. Using
+    # the union probability keeps the result smooth and bounded when they overlap.
+    outside_probability = 1.0
+    for (cx, cy, width) in centers
+        pocket = exp(-((x - cx)^2 + (y - cy)^2) / (2width^2))
+        outside_probability *= 1.0 - pocket
     end
+    pocket_influence = 1.0 - outside_probability
+    return wind.background + (wind.rated - wind.background) * pocket_influence
+end
 
-    Random.seed!(seed)
+@everywhere function generate_moving_pocket_data(xs, ys, ts, w_rated_val, wind_offset)
+    wind = MovingPocketWind(w_rated_val, w_rated_val + wind_offset, first(ts))
+    # Measurement noise is added only by the simulator.
+    data = [wind(x, y, t) for x in xs, y in ys, t in ts]
+    return (; xs, ys, ts, data, itp=wind)
+end
 
+@everywhere function build_environment(; w_rated_val=-3.5, wind_offset=6.0,
+        ls_val=0.75, lt_val=45.0)
     Δt      = 2.5
     dt_min  = Δt / 60
     dt_hrs  = Δt / 3600
     T_begin = 9.0
-    T_end   = 12.0
+    T_end   = 15.0
     ts_hrs  = T_begin:dt_hrs:T_end
     ts_min  = T_begin*60:dt_min:T_end*60
 
@@ -110,7 +155,7 @@ end
     ys = 0:dx:1.9
     grid_pts = vec([@SVector[x, y] for x in xs, y in ys])
 
-    synthetic_data = STGPKF.generate_spatiotemporal_process(xs, ys, dt_min, (T_end - T_begin) * 60, ks, kt)
+    synthetic_data = generate_moving_pocket_data(xs, ys, ts_min, w_rated_val, wind_offset)
 
     problem = STGPKFProblem(grid_pts, ks, kt, dt_min)
     ngpkf_grid = NGPKF.NGPKFGrid(synthetic_data.xs, synthetic_data.ys, ks)
@@ -127,7 +172,7 @@ end
         end
     end
 
-    soc_begin, soc_end = 6000, 5500
+    soc_begin, soc_end = 6000, 5250
     lcbf = SoCController.compute_lcbf(ts_hrs, dt_hrs)
     ucbf = SoCController.compute_ucbf(ts_hrs, dt_hrs)
     soc_target, v_opt = SoCController.generate_SOC_target(lcbf, ucbf, soc_begin, soc_end, ts_hrs, dt_hrs)
@@ -148,13 +193,7 @@ end
             transect_pts, fuse_measurements_every_ΔT, recompute_controller_every_ΔT,
             σ_meas, σ_t, convex_polygon = JordanLakeDomain.convex_polygon)
 
-    ENV_CACHE[key] = base_env
-    return base_env
-end
-
-@everywhere function build_environment(; seed=1234, w_rated_val=-3.5, ls_val=0.75, lt_val=45.0)
-    base_env = get_base_environment(; seed=seed, ls_val=ls_val, lt_val=lt_val)
-    return merge(base_env, (; w_rated_val=w_rated_val))
+    return merge(base_env, (; w_rated_val, wind_offset, ls_val, lt_val))
 end
 
 # =============================================================================
@@ -199,7 +238,6 @@ end
         return target_spatial_dist, q_target_temp
     end
 
-
     function target_clarity_reward_grid(q_target_map, ergo_grid, env)
         q_target_itp = linear_interpolation(
             (env.synthetic_data.xs, env.synthetic_data.ys), q_target_map,
@@ -213,6 +251,9 @@ end
         max_clarity = maximum(target_clarity)
         max_clarity > 0 || return zeros(size(target_clarity))
 
+        # Select the nearest cell belonging to a high target-clarity region. This
+        # turns distant rated-wind pockets into a useful gradient for the short
+        # branch-and-bound horizon instead of changing the desired destination.
         high_clarity = findall(q -> q >= high_clarity_fraction * max_clarity, target_clarity)
         goal_idx = high_clarity[argmin([
             hypot(grid_xs[idx[1]] - position[1], grid_ys[idx[2]] - position[2])
@@ -231,7 +272,6 @@ end
         end
         return reward
     end
-
 
 
 function uniform_target_clarity_map(env, convex_polygon; target_q=0.95)
@@ -554,7 +594,9 @@ end
             _, q_target_temp = compute_target_spatial_dist(
                 Mean, ergo_q_map, w_rated_val, convex_polygon, ergo_grid, env)
 
-            # Plan from the live target-clarity map derived from the latest STGPKF mean.
+            # BB-IPP should pursue the rated-wind likelihood itself. The previous
+            # clarity-deficit reward can remain nearly uniform as achieved clarity
+            # evolves, causing this controller to duplicate the cached baseline.
             target_clarity_grid = target_clarity_reward_grid(q_target_temp, ergo_grid, env)
             dist_km = umax * dt_sec_per_primitive / 1000.0
             primitives = get_motion_primitives(1.0, dist_km, M_primitives)
@@ -745,428 +787,168 @@ end
         gt_clarity_rmse_series, target_clarity_rmse_series
 end
 
-@everywhere function run_task(task_tuple)
-    seed, strategy_name, outdir, w_rated_val, ls_val, lt_val = task_tuple
-    
-    filename = @sprintf("trial_seed%d_%s_w%.2f_ls%.2f_lt%.2f.jld2", seed, strategy_name, w_rated_val, ls_val, lt_val)
-    outpath = joinpath(outdir, filename)
-
-    if isfile(outpath)
-        data = load(outpath)
-        meas = data["measurements"]
-        rmse_global = data["rmse_global"]
-        clarity_deficit = data["clarity_deficit"]
-        gt_clarity_deficit = get(data, "gt_clarity_deficit", clarity_deficit)
-        
-        # Load new RMSEs with fallbacks for backwards compatibility
-        est_clarity_rmse = get(data, "est_clarity_rmse", clarity_deficit)
-        gt_clarity_rmse = get(data, "gt_clarity_rmse", clarity_deficit)
-        target_clarity_rmse = get(data, "target_clarity_rmse", clarity_deficit)
-        
-        solve_time = get(data, "solve_time", 0.0)
-    else
-        env = build_environment(; seed=seed, w_rated_val=w_rated_val, ls_val=ls_val, lt_val=lt_val)
-        fn = STRATEGY_FNS[strategy_name]
-        
-        t0 = time()
-        res = fn(env)
-        solve_time = time() - t0
-
-        rmse_global, clarity_deficit, gt_clarity_deficit, est_clarity_rmse, gt_clarity_rmse, target_clarity_rmse = compute_run_metrics(res, env)
-        meas = vec(res.measurements)
-
-        jldsave(outpath;
-            measurements = meas,
-            rmse_global = rmse_global,
-            clarity_deficit = clarity_deficit,
-            gt_clarity_deficit = gt_clarity_deficit,
-            est_clarity_rmse = est_clarity_rmse,
-            gt_clarity_rmse = gt_clarity_rmse,
-            target_clarity_rmse = target_clarity_rmse,
-            solve_time = solve_time,
-            xs = res.xs,       
-            us = res.us,       
-            seed = seed,       
-            strategy = string(strategy_name)
-        )
-    end
-
-    return (seed, strategy_name, meas, rmse_global, clarity_deficit, gt_clarity_deficit, est_clarity_rmse, gt_clarity_rmse, target_clarity_rmse, solve_time, w_rated_val, ls_val, lt_val)
+# Sample maps on their actual update timestamps, holding each until the next
+# update. Keep every path point so frame skipping never straightens the route.
+@everywhere function animation_samples(res, env; seconds=30.0, fps=10)
+    nframes = min(length(res.xs), floor(Int, seconds * fps))
+    indices = unique(round.(Int, range(1, length(res.xs); length=nframes)))
+    times = collect(res.ts)[indices]
+    target_ts = [first(res.ts); collect(res.ts[1:end-1])]
+    clarity_indices = [clamp(searchsortedlast(res.w_hat_ts, t),
+        1, length(res.ergo_q_maps)) for t in times]
+    target_indices = [clamp(searchsortedlast(target_ts, t),
+        1, length(res.q_target_maps)) for t in times]
+    truth_target_maps = [ground_truth_target_clarity_map(env, target_ts[i])
+        for i in target_indices]
+    return (; indices, times,
+        clarity_maps=res.ergo_q_maps[clarity_indices],
+        target_maps=res.q_target_maps[target_indices],
+        truth_target_maps, fps)
 end
 
-function build_plot_rows(strategies, w_rated_cmd, ls_cmd, lt_cmd, N_mc,
-        measurements_dict, rmse_global_dict, gt_clarity_deficit_dict)
-    rows = NamedTuple[]
-    sem_calc(values) = length(values) > 1 ? std(values) / sqrt(length(values)) : 0.0
-
-    for w in w_rated_cmd, ls in ls_cmd, lt in lt_cmd, strat in strategies
-        key = (strat, w, ls, lt)
-        rmse_runs = rmse_global_dict[key]
-        gt_def_runs = gt_clarity_deficit_dict[key]
-        isempty(rmse_runs) && continue
-
-        rmse_values = [mean(run) for run in rmse_runs]
-        gt_def_values = [mean(run) for run in gt_def_runs]
-        errors = measurements_dict[key] .- w
-        in_target = count(abs.(errors) .<= 1.0) / max(1, length(errors)) * 100.0
-
-        push!(rows, (; strategy=string(strat), w_rated=w, ls, lt,
-            rmse=mean(rmse_values), rmse_sem=sem_calc(rmse_values),
-            gt_def=mean(gt_def_values), gt_def_sem=sem_calc(gt_def_values),
-            in_target))
+function animate_strategy(strategy, trial, env, outdir)
+    animation = trial["animation"]
+    history = trial["xs"]
+    frame = Observable(1)
+    clarity = lift(i -> animation.clarity_maps[i], frame)
+    target = lift(i -> animation.target_maps[i], frame)
+    truth = lift(frame) do i
+        truth_idx = clamp(round(Int,
+            (animation.times[i] - first(env.ts_min)) / env.dt_min) + 1,
+            1, size(env.synthetic_data.data, 3))
+        env.synthetic_data.data[:, :, truth_idx]
     end
-    return rows
-end
-
-function plot_summary_outputs(rows, strategies, w_rated_cmd, ls_cmd, lt_cmd, output_dir)
-    isempty(rows) && return
-    mkpath(output_dir)
-
-    labels = Dict(
-        "transect" => "Transect",
-        "ergo_nonadaptive" => "Ergodic (Non-Adaptive)",
-        "ergo_adaptive" => "Ergodic (Adaptive)",
-        "ergo_ground_truth" => "Ergodic (Ground Truth)",
-        "bb_ipp_nonadaptive" => "BB-IPP (Non-Adaptive)",
-        "bb_ipp_adaptive" => "BB-IPP (Adaptive)",
-        "bb_ipp_ground_truth" => "BB-IPP (Ground Truth)",
-    )
-    colors = Dict(
-        "transect" => RGBf(0.4, 0.4, 0.4),
-        "ergo_nonadaptive" => RGBf(0.2, 0.5, 0.8),
-        "ergo_adaptive" => RGBf(0.0, 0.2, 0.8),
-        "ergo_ground_truth" => RGBf(0.0, 0.6, 0.35),
-        "bb_ipp_nonadaptive" => RGBf(0.8, 0.4, 0.1),
-        "bb_ipp_adaptive" => RGBf(0.8, 0.1, 0.0),
-        "bb_ipp_ground_truth" => RGBf(0.55, 0.0, 0.55),
-    )
-    markers = Dict(
-        "transect" => :rect,
-        "ergo_nonadaptive" => :circle,
-        "ergo_adaptive" => :diamond,
-        "ergo_ground_truth" => :hexagon,
-        "bb_ipp_nonadaptive" => :utriangle,
-        "bb_ipp_adaptive" => :star5,
-        "bb_ipp_ground_truth" => :pentagon,
-    )
-    strategy_strings = string.(strategies)
-    plot_rows(strat; w=nothing, ls=nothing, lt=nothing) = [
-        row for row in rows
-        if row.strategy == strat &&
-           (w === nothing || row.w_rated == w) &&
-           (ls === nothing || row.ls == ls) &&
-           (lt === nothing || row.lt == lt)
-    ]
-    metric_values(strat, metric; w=nothing, ls=nothing, lt=nothing) = [
-        getproperty(row, metric) for row in plot_rows(strat; w, ls, lt)
-    ]
-    condition_value(strat, w, ls, lt, metric) = begin
-        selected = plot_rows(strat; w, ls, lt)
-        isempty(selected) ? NaN : getproperty(first(selected), metric)
-    end
-    x_positions = 1:length(w_rated_cmd)
-    x_labels = string.(w_rated_cmd)
-    line_style(strat) = contains(strat, "nonadaptive") ? :dash :
-        contains(strat, "ground_truth") ? :dashdot :
-        strat == "transect" ? :dot : :solid
-    line_width(strat) = contains(strat, "adaptive") ? 2.5 : 1.5
-
-    # Figure 1: adaptation gain.
-    fig = Figure(size=(1200, 500), fontsize=13)
-    for (col, (title, nonadaptive, adaptive, ground_truth)) in enumerate([
-            ("Ergodic Planner", "ergo_nonadaptive", "ergo_adaptive", "ergo_ground_truth"),
-            ("BB-IPP Planner", "bb_ipp_nonadaptive", "bb_ipp_adaptive", "bb_ipp_ground_truth")])
-        ax = Axis(fig[1, col], title=title,
-            xlabel="Rated Wind Speed (W_rated)",
-            ylabel=col == 1 ? "In-Target % (mean ± SEM across Ls, Lt)" : "",
-            xticks=(x_positions, x_labels), yminorgridvisible=true)
-        for (strat, style) in [(nonadaptive, :dash), (adaptive, :solid),
-                (ground_truth, :dashdot)]
-            means = [mean(metric_values(strat, :in_target; w)) for w in w_rated_cmd]
-            sems = [begin
-                values = [row.in_target for row in plot_rows(strat; w)]
-                length(values) > 1 ? std(values) / sqrt(length(values)) : 0.0
-            end for w in w_rated_cmd]
-            lines!(ax, x_positions, means; color=colors[strat], linestyle=style, linewidth=2)
-            scatter!(ax, x_positions, means; color=colors[strat], marker=markers[strat],
-                markersize=10, label=labels[strat])
-            errorbars!(ax, x_positions, means, sems; color=colors[strat], whiskerwidth=8)
-        end
-        axislegend(ax, position=:lb, framevisible=true, labelsize=11)
-    end
-    save(joinpath(output_dir, "fig1_adaptation_gain.pdf"), fig)
-    save(joinpath(output_dir, "fig1_adaptation_gain.png"), fig, px_per_unit=2)
-
-    # Figure 2: BB-IPP adaptive minus adaptive ergodic in-target percentage.
-    fig = Figure(size=(max(1100, 260 * length(w_rated_cmd)), 300), fontsize=13)
-    for (wi, w) in enumerate(w_rated_cmd)
-        ax = Axis(fig[1, wi], title="W_rated = $w",
-            xlabel=wi == cld(length(w_rated_cmd), 2) ? "Lt (min)" : "",
-            ylabel=wi == 1 ? "Ls (km)" : "",
-            xticks=(1:length(lt_cmd), string.(lt_cmd)),
-            yticks=(1:length(ls_cmd), string.(ls_cmd)))
-        data = [condition_value("bb_ipp_adaptive", w, ls, lt, :in_target) -
-                condition_value("ergo_adaptive", w, ls, lt, :in_target)
-                for ls in ls_cmd, lt in lt_cmd]
-        hm = heatmap!(ax, data; colormap=:RdBu,
-            colorrange=(-max(maximum(abs.(filter(isfinite, vec(data)))), 0.1),
-                        max(maximum(abs.(filter(isfinite, vec(data)))), 0.1)))
-        for li in eachindex(ls_cmd), ti in eachindex(lt_cmd)
-            isfinite(data[li, ti]) || continue
-            text!(ax, ti, li; text=@sprintf("%+.1f", data[li, ti]),
-                align=(:center, :center), fontsize=11,
-                color=abs(data[li, ti]) > 0.6 * maximum(abs.(filter(isfinite, vec(data)))) ? :white : :black)
-        end
-        wi == length(w_rated_cmd) && Colorbar(fig[1, wi + 1], hm,
-            label="BB-IPP - Ergodic\nIn-Target (pp)", labelsize=11)
-    end
-    save(joinpath(output_dir, "fig2_adaptive_comparison_heatmap.pdf"), fig)
-    save(joinpath(output_dir, "fig2_adaptive_comparison_heatmap.png"), fig, px_per_unit=2)
-
-    # Figures 3-7 share the same strategy styles and condition aggregation.
-    plot_metric(strategies_to_plot, metric, error_metric, title, ylabel, filename) = begin
-        fig = Figure(size=(800, 500), fontsize=13)
-        ax = Axis(fig[1, 1], title=title, xlabel="Rated Wind Speed (W_rated)",
-            ylabel=ylabel, xticks=(x_positions, x_labels), yminorgridvisible=true)
-        for strat in strategies_to_plot
-            color = colors[strat]
-            for ls in ls_cmd, lt in lt_cmd
-                values = [condition_value(strat, w, ls, lt, metric) for w in w_rated_cmd]
-                lines!(ax, x_positions, values; color=(color, 0.15),
-                    linestyle=line_style(strat), linewidth=1)
+    title = lift(i -> @sprintf("%s | Mission time: %.1f min", strategy,
+        animation.times[i] - first(env.ts_min)), frame)
+    fig = Figure(size=(1500, 560))
+    Label(fig[0, 1:6], title; fontsize=20)
+    polygon = hcat(env.convex_polygon.vertices, env.convex_polygon.vertices[:, 1])
+    fields = (truth, clarity, target)
+    titles = ("Ground-truth wind and path", "Achieved clarity", "Target clarity")
+    for panel in 1:3
+        col = 2panel - 1
+        ax = Axis(fig[1, col]; title=titles[panel], xlabel="West → East (km)",
+            ylabel="South → North (km)", aspect=DataAspect())
+        limits!(ax, first(env.xs), last(env.xs), first(env.ys), last(env.ys))
+        colorrange = panel == 1 ? extrema(env.synthetic_data.data) : (0.0, 1.0)
+        hm = heatmap!(ax, env.xs, env.ys, fields[panel]; colorrange, colormap=:viridis)
+        Colorbar(fig[1, col+1], hm; label=panel == 1 ? "Normalized wind speed" : "Clarity")
+        lines!(ax, polygon[1, :], polygon[2, :]; color=:white, linewidth=2)
+        for robot in eachindex(first(history))
+            path = lift(frame) do i
+                [Point2f(state[robot][1], state[robot][2])
+                    for state in history[1:animation.indices[i]]]
             end
-            means = [begin
-                values = [row for row in rows if row.strategy == strat && row.w_rated == w]
-                isempty(values) ? NaN : mean(getproperty.(values, metric))
-            end for w in w_rated_cmd]
-            errors = [begin
-                values = [getproperty(row, error_metric) for row in rows
-                    if row.strategy == strat && row.w_rated == w]
-                isempty(values) ? 0.0 : sqrt(sum(values .^ 2)) / length(values)
-            end for w in w_rated_cmd]
-            lines!(ax, x_positions, means; color, linestyle=line_style(strat),
-                linewidth=line_width(strat), label=labels[strat])
-            scatter!(ax, x_positions, means; color, marker=markers[strat], markersize=9)
-            errorbars!(ax, x_positions, means, errors; color, whiskerwidth=6)
+            current = lift(points -> [last(points)], path)
+            lines!(ax, path; color=:orange, linewidth=2)
+            scatter!(ax, current; color=:red, strokecolor=:white, strokewidth=1, markersize=12)
         end
-        axislegend(ax, position=:rt, framevisible=true, labelsize=10)
-        save(joinpath(output_dir, filename * ".pdf"), fig)
-        save(joinpath(output_dir, filename * ".png"), fig, px_per_unit=2)
     end
-
-    plot_metric(strategy_strings, :rmse, :rmse_sem,
-        "Global RMSE: Strategy Comparison Across Rated Wind Speeds",
-        "RMSE (mean ± SEM)", "fig3_rmse_comparison")
-    plot_metric(strategy_strings, :gt_def, :gt_def_sem,
-        "Clarity Deficit (Ground Truth): Strategy Comparison",
-        "GT Deficit (mean ± SEM)", "fig6_deficit_comparison")
-
-    plot_grid(metric, title, ylabel, filename) = begin
-        fig = Figure(size=(1100, 950), fontsize=12)
-        Label(fig[0, 1:length(lt_cmd)], title, fontsize=15, font=:bold)
-        for (ri, ls) in enumerate(ls_cmd), (ci, lt) in enumerate(lt_cmd)
-            ax = Axis(fig[ri, ci], title="Ls=$(ls) km, Lt=$(Int(lt)) min",
-                xlabel=ci == cld(length(lt_cmd), 2) && ri == length(ls_cmd) ? "W_rated" : "",
-                ylabel=ci == 1 ? ylabel : "", xticks=(x_positions, x_labels),
-                yminorgridvisible=true)
-            for strat in strategy_strings
-                values = [condition_value(strat, w, ls, lt, metric) for w in w_rated_cmd]
-                lines!(ax, x_positions, values; color=colors[strat],
-                    linestyle=line_style(strat), linewidth=line_width(strat))
-                scatter!(ax, x_positions, values; color=colors[strat],
-                    marker=markers[strat], markersize=8)
-            end
-        end
-        legend_elements = [LineElement(color=colors[s], linestyle=line_style(s),
-            linewidth=2) for s in strategy_strings]
-        Legend(fig[length(ls_cmd) + 1, 1:length(lt_cmd)], legend_elements,
-            [labels[s] for s in strategy_strings], orientation=:horizontal,
-            framevisible=true, labelsize=10)
-        save(joinpath(output_dir, filename * ".pdf"), fig)
-        save(joinpath(output_dir, filename * ".png"), fig, px_per_unit=2)
+    mkpath(outdir)
+    path = joinpath(outdir, "$(strategy).mp4")
+    record(fig, path, eachindex(animation.indices); framerate=animation.fps) do i
+        frame[] = i
     end
-
-    plot_grid(:in_target, "In-Target % by Strategy, W_rated, Ls, and Lt",
-        "In-Target %", "fig4_full_grid")
-    plot_grid(:rmse, "Global RMSE by Strategy, W_rated, Ls, and Lt",
-        "RMSE", "fig5_rmse_full_grid")
-    plot_grid(:gt_def, "Clarity Deficit (Ground Truth) by Strategy, W_rated, Ls, and Lt",
-        "GT Deficit", "fig7_deficit_full_grid")
-    println("Comparison plots saved to: ", output_dir)
+    println("Animation saved: $path ($(length(animation.indices) / animation.fps) s)")
+    return path
 end
 
-# =============================================================================
-# Main Driver & Post-Processing
-# =============================================================================
+@everywhere function run_task(task)
+    strategy, seed, outdir, animation_seconds, animation_fps = task
+    # Fresh estimator state and the same noise seed for every strategy, regardless
+    # of which worker runs it. The truth is deterministic and identical everywhere.
+    env = build_environment(; SINGLE_ENV_CONFIG...)
+    Random.seed!(seed)
+    t0 = time()
+    res = STRATEGY_FNS[strategy](env)
+    solve_time = time() - t0
+    rmse, deficit, gt_deficit, est_c_rmse, gt_c_rmse, tgt_c_rmse = compute_run_metrics(res, env)
+    measurements = vec(res.measurements)
+    jldsave(joinpath(outdir, "trial_$(strategy).jld2");
+        strategy=string(strategy), seed, measurements, solve_time,
+        metric_times=collect(res.w_hat_ts),
+        rmse_global=rmse, clarity_deficit=deficit, gt_clarity_deficit=gt_deficit,
+        est_clarity_rmse=est_c_rmse, gt_clarity_rmse=gt_c_rmse,
+        target_clarity_rmse=tgt_c_rmse, xs=res.xs, us=res.us,
+        animation=animation_samples(res, env; seconds=animation_seconds, fps=animation_fps),
+        w_rated=env.w_rated_val, wind_offset=env.wind_offset,
+        ls=env.ls_val, lt=env.lt_val)
+    errors = measurements .- env.w_rated_val
+    return (; strategy=string(strategy), rmse=mean(rmse),
+        est_clarity_rmse=mean(est_c_rmse), gt_clarity_rmse=mean(gt_c_rmse),
+        target_clarity_rmse=mean(tgt_c_rmse), est_deficit=mean(deficit),
+        gt_deficit=mean(gt_deficit), solve_time, error_mean=mean(errors),
+        error_std=length(errors) > 1 ? std(errors) : 0.0,
+        in_target=100 * count(abs.(errors) .<= 1.0) / max(1, length(errors)))
+end
+
 function main()
-    datetime_str = Dates.format(SCRIPT_START_TIME, "yyyymmdd_HHMMSS")
-    data_dir = joinpath(opts["outdir"], datetime_str)
+    data_dir = joinpath(opts["outdir"], Dates.format(SCRIPT_START_TIME, "yyyymmdd_HHMMSS"))
     mkpath(data_dir)
+    config = (; w_rated_val, wind_offset, ls_val, lt_val)
+    @everywhere SINGLE_ENV_CONFIG = $config
+    env = build_environment(; config...)
+    wind = env.synthetic_data.itp
+    println("Single moving-pocket environment comparison")
+    println("Background: $(wind.background) normalized wind speed; pocket centers approach rated wind $(wind.rated)")
+    println("Strategies: $(strategies); measurement-noise seed: $seed")
+    println("Output directory: $(abspath(data_dir))")
+    jldsave(joinpath(data_dir, "environment.jld2");
+        xs=env.xs, ys=env.ys, ts_min=env.ts_min,
+        wind_map=env.synthetic_data.data[:, :, 1], wind_data=env.synthetic_data.data,
+        background_wind=wind.background, rated_wind=wind.rated, time_invariant=false,
+        w_rated=w_rated_val, wind_offset, ls=ls_val, lt=lt_val, seed)
 
-    println("="^80)
-    println("Monte Carlo Parameter Sweep Routine")
-    println("Start Timestamp:  $(Dates.format(SCRIPT_START_TIME, "yyyy-mm-dd HH:MM:SS"))")
-    println("Output Directory: $(abspath(data_dir))")
-    println("MC Seeds:         $(seeds)")
-    println("Wind Speeds (W):  $(w_rated_cmd)")
-    println("Spatial (Ls):     $(ls_cmd)")
-    println("Temporal (Lt):    $(lt_cmd)")
-    println("Strategies:       $(strategies)")
-    println("Active Workers:   $(workers())")
-    println("="^80)
-
-    tasks = [(seed, strat, data_dir, w, ls, lt) 
-             for seed in seeds 
-             for strat in strategies 
-             for w in w_rated_cmd 
-             for ls in ls_cmd 
-             for lt in lt_cmd]
-             
-    results = pmap(run_task, tasks)
-
-    # Dict Initialization Inside main()
-    measurements_dict       = Dict{Tuple{Symbol, Float64, Float64, Float64}, Vector{Float64}}()
-    rmse_global_dict        = Dict{Tuple{Symbol, Float64, Float64, Float64}, Vector{Vector{Float64}}}()
-    clarity_deficit_dict    = Dict{Tuple{Symbol, Float64, Float64, Float64}, Vector{Vector{Float64}}}()
-    gt_clarity_deficit_dict = Dict{Tuple{Symbol, Float64, Float64, Float64}, Vector{Vector{Float64}}}()
-    est_c_rmse_dict         = Dict{Tuple{Symbol, Float64, Float64, Float64}, Vector{Vector{Float64}}}()
-    gt_c_rmse_dict          = Dict{Tuple{Symbol, Float64, Float64, Float64}, Vector{Vector{Float64}}}()
-    tgt_c_rmse_dict         = Dict{Tuple{Symbol, Float64, Float64, Float64}, Vector{Vector{Float64}}}()
-    solve_time_dict         = Dict{Tuple{Symbol, Float64, Float64, Float64}, Vector{Float64}}()
-
-    for s in strategies, w in w_rated_cmd, ls in ls_cmd, lt in lt_cmd
-        measurements_dict[(s, w, ls, lt)] = Float64[]
-        rmse_global_dict[(s, w, ls, lt)] = Vector{Float64}[]
-        clarity_deficit_dict[(s, w, ls, lt)] = Vector{Float64}[]
-        gt_clarity_deficit_dict[(s, w, ls, lt)] = Vector{Float64}[]
-        est_c_rmse_dict[(s, w, ls, lt)] = Vector{Float64}[]
-        gt_c_rmse_dict[(s, w, ls, lt)] = Vector{Float64}[]
-        tgt_c_rmse_dict[(s, w, ls, lt)] = Vector{Float64}[]
-        solve_time_dict[(s, w, ls, lt)] = Float64[]
-    end
-
-    for (seed, strat, meas, rmse_g, deficit, gt_deficit, e_c_rmse, gt_c_rmse, t_c_rmse, stime, w_val, ls_val, lt_val) in results
-        append!(measurements_dict[(strat, w_val, ls_val, lt_val)], meas)
-        push!(rmse_global_dict[(strat, w_val, ls_val, lt_val)], rmse_g)
-        push!(clarity_deficit_dict[(strat, w_val, ls_val, lt_val)], deficit)
-        push!(gt_clarity_deficit_dict[(strat, w_val, ls_val, lt_val)], gt_deficit)
-        push!(est_c_rmse_dict[(strat, w_val, ls_val, lt_val)], e_c_rmse)
-        push!(gt_c_rmse_dict[(strat, w_val, ls_val, lt_val)], gt_c_rmse)
-        push!(tgt_c_rmse_dict[(strat, w_val, ls_val, lt_val)], t_c_rmse)
-        push!(solve_time_dict[(strat, w_val, ls_val, lt_val)], stime)
-    end
-
-    allowable_buffer = 1.0
-    N_mc = length(seeds)
-    strategy_names_str = string.(strategies)
-
-    # =========================================================================
-    # Report Generation (TXT & CSV) - Insert this after your Makie plot block
-    # =========================================================================
-    txt_report_path = joinpath(data_dir, "summary_table.txt")
-    open(txt_report_path, "w") do f
-        println(f, "="^190)
-        println(f, "MONTE CARLO SIMULATION SUMMARY TABLE")
-        println(f, "Generated: $(Dates.format(Dates.now(), "yyyy-mm-dd HH:MM:SS"))")
-        println(f, "="^190)
-        
-        @printf(f, "%-7s | %-5s | %-5s | %-16s | %-17s | %-18s | %-18s | %-18s | %-17s | %-17s | %-11s | %-10s\n",
-            "W_rated", "Ls", "Lt", "Strategy", "RMSE (Mean±SEM)", "Est C-RMSE (±SEM)", "GT C-RMSE (±SEM)", "Tgt C-RMSE (±SEM)", "Est Def (Mean±IQR)", "GT Def (Mean±IQR)", "Time (s)", "In-Target")
-        println(f, "-"^190)
-
-        for w in w_rated_cmd, ls in ls_cmd, lt in lt_cmd
-            for (k, strat) in enumerate(strategies)
-                rmse_series = rmse_global_dict[(strat, w, ls, lt)]
-                if isempty(rmse_series) continue end
-
-                # Standard Error of Mean logic for RMSEs
-                sem_calc(x) = N_mc > 1 ? std(x) / sqrt(N_mc) : 0.0
-                
-                m_rmse_g, sem_rmse_g = mean([mean(s) for s in rmse_series]), sem_calc([mean(s) for s in rmse_series])
-                m_ec, sem_ec = mean([mean(s) for s in est_c_rmse_dict[(strat, w, ls, lt)]]), sem_calc([mean(s) for s in est_c_rmse_dict[(strat, w, ls, lt)]])
-                m_gtc, sem_gtc = mean([mean(s) for s in gt_c_rmse_dict[(strat, w, ls, lt)]]), sem_calc([mean(s) for s in gt_c_rmse_dict[(strat, w, ls, lt)]])
-                m_tc, sem_tc = mean([mean(s) for s in tgt_c_rmse_dict[(strat, w, ls, lt)]]), sem_calc([mean(s) for s in tgt_c_rmse_dict[(strat, w, ls, lt)]])
-
-                # IQR logic for Deficits
-                iqr_calc(x) = N_mc > 1 ? quantile(x, 0.75) - quantile(x, 0.25) : 0.0
-                run_def = [mean(s) for s in clarity_deficit_dict[(strat, w, ls, lt)]]
-                run_gt_def = [mean(s) for s in gt_clarity_deficit_dict[(strat, w, ls, lt)]]
-
-                def_str = @sprintf("%.4f±%.4f", mean(run_def), iqr_calc(run_def))
-                gt_str = @sprintf("%.4f±%.4f", mean(run_gt_def), iqr_calc(run_gt_def))
-                
-                time_str = @sprintf("%.2f±%.2f", mean(solve_time_dict[(strat, w, ls, lt)]), std(solve_time_dict[(strat, w, ls, lt)]))
-                
-                errs = measurements_dict[(strat, w, ls, lt)] .- w
-                in_range = count(abs.(errs) .<= allowable_buffer) / max(1, length(errs))
-
-                @printf(f, "%-7.2f | %-5.2f | %-5.2f | %-16s | %-17s | %-18s | %-18s | %-18s | %-17s | %-17s | %-11s | %-9.1f%%\n",
-                    w, ls, lt, strategy_names_str[k],
-                    @sprintf("%.4f±%.4f", m_rmse_g, sem_rmse_g),
-                    @sprintf("%.4f±%.4f", m_ec, sem_ec),
-                    @sprintf("%.4f±%.4f", m_gtc, sem_gtc),
-                    @sprintf("%.4f±%.4f", m_tc, sem_tc),
-                    def_str, gt_str, time_str, in_range * 100.0
-                )
-            end
-            println(f, "-"^190)
+    tasks = [(strategy, seed, data_dir, animation_seconds, animation_fps) for strategy in strategies]
+    rows = nprocs() == 1 ? map(run_task, tasks) : pmap(run_task, tasks)
+    open(joinpath(data_dir, "summary_metrics.csv"), "w") do io
+        println(io, join(string.(propertynames(first(rows))), ","))
+        for row in rows
+            println(io, join(values(row), ","))
         end
     end
-
-    csv_report_path = joinpath(data_dir, "summary_metrics.csv")
-    open(csv_report_path, "w") do f
-        println(f, "W_Rated,Ls,Lt,Strategy,RMSE_Mean,RMSE_SEM,Est_Clarity_RMSE_Mean,Est_Clarity_RMSE_SEM,GT_Clarity_RMSE_Mean,GT_Clarity_RMSE_SEM,Target_Clarity_RMSE_Mean,Target_Clarity_RMSE_SEM,Est_Deficit_Mean,Est_Deficit_IQR,GT_Deficit_Mean,GT_Deficit_IQR,Solve_Time_Mean,Solve_Time_Std,Error_Mean,Error_Std,Proportion_In_Target")
-        for w in w_rated_cmd, ls in ls_cmd, lt in lt_cmd, (k, strat) in enumerate(strategies)
-            rmse_series = rmse_global_dict[(strat, w, ls, lt)]
-            if isempty(rmse_series) continue end
-
-            sem_calc(x) = N_mc > 1 ? std(x) / sqrt(N_mc) : 0.0
-            iqr_calc(x) = N_mc > 1 ? quantile(x, 0.75) - quantile(x, 0.25) : 0.0
-
-            m_rmse, sem_rmse = mean([mean(s) for s in rmse_series]), sem_calc([mean(s) for s in rmse_series])
-            m_ec, sem_ec = mean([mean(s) for s in est_c_rmse_dict[(strat, w, ls, lt)]]), sem_calc([mean(s) for s in est_c_rmse_dict[(strat, w, ls, lt)]])
-            m_gtc, sem_gtc = mean([mean(s) for s in gt_c_rmse_dict[(strat, w, ls, lt)]]), sem_calc([mean(s) for s in gt_c_rmse_dict[(strat, w, ls, lt)]])
-            m_tc, sem_tc = mean([mean(s) for s in tgt_c_rmse_dict[(strat, w, ls, lt)]]), sem_calc([mean(s) for s in tgt_c_rmse_dict[(strat, w, ls, lt)]])
-
-            run_def = [mean(s) for s in clarity_deficit_dict[(strat, w, ls, lt)]]
-            run_gt_def = [mean(s) for s in gt_clarity_deficit_dict[(strat, w, ls, lt)]]
-            
-            stimes = solve_time_dict[(strat, w, ls, lt)]
-            errs = measurements_dict[(strat, w, ls, lt)] .- w
-            in_range = count(abs.(errs) .<= allowable_buffer) / max(1, length(errs))
-            
-            @printf(f, "%.2f,%.2f,%.2f,%s,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
-                w, ls, lt, strategy_names_str[k],
-                m_rmse, sem_rmse, m_ec, sem_ec, m_gtc, sem_gtc, m_tc, sem_tc,
-                mean(run_def), iqr_calc(run_def), mean(run_gt_def), iqr_calc(run_gt_def),
-                mean(stimes), std(stimes), mean(errs), std(errs), in_range
-            )
-        end
-    end
-
-    plot_rows = build_plot_rows(
-        strategies, w_rated_cmd, ls_cmd, lt_cmd, N_mc,
-        measurements_dict, rmse_global_dict, gt_clarity_deficit_dict)
-    plot_data_path = joinpath(data_dir, "plot_summary_data.csv")
-    open(plot_data_path, "w") do f
-        println(f, "Strategy,W_Rated,Ls,Lt,RMSE_Mean,RMSE_SEM,GT_Deficit_Mean,GT_Deficit_SEM,In_Target_Percent")
-        for row in plot_rows
-            @printf(f, "%s,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
-                row.strategy, row.w_rated, row.ls, row.lt, row.rmse, row.rmse_sem,
-                row.gt_def, row.gt_def_sem, row.in_target)
+    open(joinpath(data_dir, "summary_table.txt"), "w") do io
+        println(io, "SINGLE MOVING-POCKET ENVIRONMENT COMPARISON")
+        println(io, "Background=$(wind.background), pocket centers=$(wind.rated) normalized wind speed")
+        println(io, "One run per strategy; metrics are mission averages, without Monte Carlo uncertainty.")
+        @printf(io, "%-24s %12s %12s %12s %12s\n", "Strategy", "RMSE", "GT deficit", "In-target %", "Time (s)")
+        for row in rows
+            @printf(io, "%-24s %12.4f %12.4f %12.2f %12.2f\n",
+                row.strategy, row.rmse, row.gt_deficit, row.in_target, row.solve_time)
         end
     end
 
     figures_dir = joinpath(data_dir, "figures")
-    plot_summary_outputs(plot_rows, strategies, w_rated_cmd, ls_cmd, lt_cmd, figures_dir)
-    
-    wall_runtime_sec = time() - T_START_WALL
-    println("\nSweep Complete! Total Wall Runtime: ", round(wall_runtime_sec, digits=2), " seconds")
-    println("Summary metrics CSV saved to: ", csv_report_path)
-    println("Summary ASCII Table saved to: ", txt_report_path)
-    println("Plot statistics CSV saved to: ", plot_data_path)
-    println("Comparison figures saved to: ", figures_dir)
-    println("="^80)
+    mkpath(figures_dir)
+    fig = Figure(size=(1500, 550))
+    for (i, (metric, label)) in enumerate([
+            (:rmse, "Global RMSE"), (:gt_deficit, "Ground-truth clarity deficit"),
+            (:in_target, "Measurements within ±1 normalized wind speed of rated (%)")])
+        ax = Axis(fig[1, i]; title=label,
+            xticks=(collect(eachindex(rows)), [row.strategy for row in rows]),
+            xticklabelrotation=pi/4)
+        barplot!(ax, collect(eachindex(rows)), [getproperty(row, metric) for row in rows])
+    end
+    save(joinpath(figures_dir, "strategy_comparison.png"), fig)
+    save(joinpath(figures_dir, "strategy_comparison.pdf"), fig)
+    truth_fig = Figure(size=(650, 550))
+    ax = Axis(truth_fig[1, 1]; title="Initial ground-truth wind pockets", xlabel="West → East (km)",
+        ylabel="South → North (km)", aspect=DataAspect())
+    hm = heatmap!(ax, env.xs, env.ys, env.synthetic_data.data[:, :, 1])
+    vertices = env.convex_polygon.vertices
+    lines!(ax, [vertices[1, :]; vertices[1, 1]], [vertices[2, :]; vertices[2, 1]]; color=:black)
+    Colorbar(truth_fig[1, 2], hm; label="Normalized wind speed")
+    save(joinpath(figures_dir, "ground_truth.png"), truth_fig)
+    # Save the synchronized estimated-target / ground-truth deficit comparison (PNG and PDF).
+    HalfDomainDiagnostics.plot_deficits(data_dir)
+    HalfDomainDiagnostics.plot_rmse(data_dir)
+    for strategy in strategies
+        trial = load(joinpath(data_dir, "trial_$(strategy).jld2"))
+        animate_strategy(strategy, trial, env, joinpath(data_dir, "animations"))
+    end
+    println("Comparison complete in $(round(time() - T_START_WALL; digits=2)) s: $(abspath(data_dir))")
 end
 
-main()
+if abspath(PROGRAM_FILE) == @__FILE__
+    main()
+end

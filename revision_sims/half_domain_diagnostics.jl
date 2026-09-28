@@ -2,12 +2,12 @@ module HalfDomainDiagnostics
 using JLD2, CairoMakie, Statistics, Printf
 include(joinpath(@__DIR__, "..", "src", "jordan_lake_domain.jl"))
 
-const STRATEGY_ORDER = ["transect", "bb_ipp_nonadaptive", "bb_ipp_adaptive",
+const STRATEGY_ORDER = ["transect", "transect_half", "bb_ipp_nonadaptive", "bb_ipp_adaptive",
     "bb_ipp_ground_truth", "ergo_nonadaptive", "ergo_adaptive", "ergo_ground_truth"]
-const STRATEGY_LABELS = ["Transect", "BB-IPP uniform", "BB-IPP adaptive",
+const STRATEGY_LABELS = ["Transect", "Transect (interesting half)", "BB-IPP uniform", "BB-IPP adaptive",
     "BB-IPP (Ground Truth)", "Ergodic uniform", "Ergodic adaptive",
     "Ergodic (Ground Truth)"]
-const STRATEGY_COLORS = [:gray, :peru, :orangered, :purple, :steelblue, :navy, :seagreen]
+const STRATEGY_COLORS = [:gray, :deeppink, :peru, :orangered, :purple, :steelblue, :navy, :seagreen]
 
 """Replot synchronized saved maps without rerunning the missions.
 Ground-truth BB-IPP and ergodic use ground-truth targets rather than STGPKF targets.
@@ -33,11 +33,22 @@ function plot_deficits(data_dir)
         metric_times = trial["metric_times"]
         length(metric_times) == length(estimated) == length(gt) ||
             error("Clarity-deficit timestamp mismatch: $strategy")
-        west_clarity = mean([mean(q[west]) for q in a.clarity_maps])
-        west_target = mean([mean(q[west]) for q in a.target_maps])
+        # New runs save all filter maps. Legacy runs only have animation snapshots.
+        clarity_maps = get(trial, "clarity_maps", a.clarity_maps)
+        target_maps = if haskey(trial, "evaluation_target_maps") || haskey(trial, "planning_target_maps")
+            target_indices = [searchsortedlast(trial["target_times"], t) for t in metric_times]
+            map_key = haskey(trial, "evaluation_target_maps") ? "evaluation_target_maps" : "planning_target_maps"
+            trial[map_key][target_indices]
+        else
+            a.target_maps
+        end
+        west_clarity = mean([mean(q[west]) for q in clarity_maps])
+        west_target = mean([mean(q[west]) for q in target_maps])
         # Fraction of truly valuable west cells assigned less than half their true target.
-        west_underweighted = mean([mean(q[west] .< 0.475) for q in a.target_maps])
-        target_source = if strategy in ("ergo_ground_truth", "bb_ipp_ground_truth")
+        west_underweighted = mean([mean(q[west] .< 0.475) for q in target_maps])
+        target_source = if haskey(trial, "evaluation_target_source")
+            trial["evaluation_target_source"]
+        elseif strategy in ("ergo_ground_truth", "bb_ipp_ground_truth")
             "ground_truth"
         elseif strategy in ("ergo_nonadaptive", "bb_ipp_nonadaptive")
             "uniform_target"
@@ -45,14 +56,14 @@ function plot_deficits(data_dir)
             "STGPKF_mean"
         end
         push!(rows, (; strategy, target_source,
-            frames=length(estimated), estimated_deficit=mean(estimated), gt_deficit=mean(gt),
+            frames=length(clarity_maps), estimated_deficit=mean(estimated), gt_deficit=mean(gt),
             west_clarity, west_target, west_underweighted))
         push!(series, (; times=metric_times .- first(env["ts_min"]), estimated, gt,
             label=labels[index], color=palette[index]))
     end
     isempty(rows) && error("No saved strategy maps found in $data_dir")
     fig = Figure(size=(1500, 850), fontsize=15)
-    ax_est = Axis(fig[1, 1]; title="Estimated-target clarity deficit", xlabel="Mission time (min)",
+    ax_est = Axis(fig[1, 1]; title="Logged-target clarity deficit", xlabel="Mission time (min)",
         ylabel="Mean positive deficit")
     ax_gt = Axis(fig[1, 2]; title="Ground-truth-target clarity deficit", xlabel="Mission time (min)",
         ylabel="Mean positive deficit")
@@ -69,7 +80,7 @@ function plot_deficits(data_dir)
         vec(permutedims(hcat([r.estimated_deficit for r in rows], [r.gt_deficit for r in rows])));
         dodge=repeat([1, 2], length(rows)), color=repeat([:steelblue, :orange], length(rows)))
     Legend(fig[3, 1:2], [PolyElement(color=:steelblue), PolyElement(color=:orange)],
-        ["Estimated target (Ground Truth strategy uses GT)", "Ground-truth target"]; orientation=:horizontal)
+        ["Logged target (uniform / estimated / GT)", "Ground-truth target"]; orientation=:horizontal)
     Legend(fig[0, 1:2], ax_est; orientation=:horizontal, nbanks=2)
     Label(fig[4, 1:2], "Deficit = spatial mean of max(target − achieved clarity, 0). Full grid normalization; all filter updates.", fontsize=13)
     outdir = joinpath(data_dir, "figures")
@@ -126,9 +137,9 @@ function plot_rmse(data_dir)
     colors = [s.color for s in series]
     positions = collect(eachindex(series))
 
-    specs = ((:estimated, "Estimated target vs achieved clarity"),
+    specs = ((:estimated, "Logged target vs achieved clarity"),
         (:gt, "Ground-truth target vs achieved clarity"),
-        (:target_error, "Estimated target vs ground-truth target"))
+        (:target_error, "Logged target vs ground-truth target"))
     clarity_fig = Figure(size=(1500, 850), fontsize=15)
     clarity_specs = specs[1:2]
     ax_est = Axis(clarity_fig[1, 1]; title=clarity_specs[1][2], xlabel="Mission time (min)",
@@ -150,7 +161,7 @@ function plot_rmse(data_dir)
         vec(permutedims(hcat([mean(s.estimated) for s in series], [mean(s.gt) for s in series])));
         dodge=repeat([1, 2], length(series)), color=repeat([:steelblue, :orange], length(series)))
     Legend(clarity_fig[3, 1:2], [PolyElement(color=:steelblue), PolyElement(color=:orange)],
-        ["Estimated target (Ground Truth strategy uses GT)", "Ground-truth target"]; orientation=:horizontal)
+        ["Logged target (uniform / estimated / GT)", "Ground-truth target"]; orientation=:horizontal)
     Legend(clarity_fig[0, 1:2], ax_est; orientation=:horizontal, nbanks=2)
     Label(clarity_fig[4, 1:2], "RMSE = sqrt(mean((target − reference)^2)) over the full grid. All filter updates.", fontsize=13)
     save_figure(clarity_fig, "clarity_rmse_comparison")
@@ -209,7 +220,7 @@ function plot_rmse(data_dir)
     for (i, s) in enumerate(series)
         row, col = cld(i, 2), mod1(i, 2)
         ax = Axis(hist_fig[row, col]; title=s.label,
-            xlabel=row == 3 ? "Wind RMSE (normalized wind speed)" : "",
+            xlabel=row == cld(length(series), 2) ? "Wind RMSE (normalized wind speed)" : "",
             ylabel=col == 1 ? "Fraction of filter updates" : "")
         hist!(ax, s.wind; bins=wind_edges, normalization=:probability, color=s.color)
         xlims!(ax, first(wind_edges), last(wind_edges))

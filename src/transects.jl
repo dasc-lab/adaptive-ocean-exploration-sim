@@ -1,6 +1,7 @@
 module Transects
 
-using LinearAlgebra
+using LinearAlgebra, StaticArrays
+import LazySets
 import TravelingSalesmanHeuristics
 include("jordan_lake_domain.jl")
 
@@ -74,6 +75,44 @@ function solve_basic(pts::Vector{P}) where {F, P<:AbstractVector{F}}
     
     return path
     
+end
+
+"""Clip a convex polygon strictly west of split_x for the oracle transect check."""
+function west_half_polygon(polygon, split_x; margin=1e-6)
+    cut = split_x - margin
+    vertices = [polygon.vertices[:, i] for i in axes(polygon.vertices, 2)]
+    clipped = Vector{Float64}[]
+    for i in eachindex(vertices)
+        a, b = vertices[i], vertices[mod1(i+1, length(vertices))]
+        ina, inb = a[1] <= cut, b[1] <= cut
+        ina && push!(clipped, a)
+        if ina != inb
+            fraction = (cut - a[1]) / (b[1] - a[1])
+            push!(clipped, [cut, a[2] + fraction * (b[2] - a[2])])
+        end
+    end
+    length(clipped) >= 3 || throw(ArgumentError("west-half polygon is empty"))
+    return JordanLakeDomain.ConvexBoundAvoidance.ConvexPolygon(
+        LazySets.VPolygon(clipped), hcat(clipped...))
+end
+
+"""Advance the waypoint before steering and never step past the next waypoint.
+Coordinates are km, speed is m/s, and dt is minutes, matching SimulatorST.
+Straight segments between interior waypoints stay inside a convex polygon.
+"""
+function follow_waypoints(xs, points, index, speed, dt; tolerance=0.01)
+    isempty(points) && throw(ArgumentError("empty transect"))
+    length(xs) == 1 || throw(ArgumentError("transect requires one vehicle"))
+    dt > 0 || throw(ArgumentError("nonpositive timestep"))
+    x = first(xs)
+    for _ in eachindex(points)
+        norm(x - points[index]) > tolerance && break
+        index = mod1(index + 1, length(points))
+    end
+    delta = SVector{2,Float64}(points[index] - x)
+    distance = norm(delta)
+    u = distance == 0 ? zero(delta) : delta / distance * min(speed, distance / (dt * 60 / 1000))
+    return [u], index
 end
 
 end

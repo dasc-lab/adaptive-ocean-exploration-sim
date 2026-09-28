@@ -270,30 +270,11 @@ end
     function make_transect_controller(env)
         return function (t, xs, Mean, w_rated_val, convex_polygon;
                 ergo_grid, ergo_q_map, traj, transect_pts, waypoint_idx, umax=0.15, ΔT, kwargs...)
-
             _, current_q_target_temp = compute_target_spatial_dist(
                 Mean, ergo_q_map, w_rated_val, convex_polygon, ergo_grid, env)
-
-            current_waypoint = transect_pts[waypoint_idx]
-            u_out = Vector{SVector{2,Float64}}(undef, length(xs))
-            safe_margin_km = 0.015
-
-            for (k, x) in enumerate(xs)
-                u_raw = heading_calculator(umax, x, current_waypoint)
-                u_raw_sv = @SVector[u_raw[1], u_raw[2]]
-                u_out[k] = ErgodicController.convex_bounary_correction(
-                    convex_polygon, x, u_raw_sv; speed_max=umax, min_safe_d=safe_margin_km
-                )
-            end
-
-            if norm(xs[1] - current_waypoint) < 0.1
-                waypoint_idx += 1
-                if waypoint_idx > length(transect_pts)
-                    waypoint_idx = 1
-                end
-            end
-            
-            return u_out, current_q_target_temp, waypoint_idx
+            u, next_waypoint = Transects.follow_waypoints(
+                xs, transect_pts, waypoint_idx, umax, ΔT)
+            return u, current_q_target_temp, next_waypoint
         end
     end
 
@@ -316,18 +297,17 @@ function make_nonadaptive_ergo_controller(env)
     return function (t, xs, Mean, w_rated_val, convex_polygon;
             ergo_grid, ergo_q_map, traj, umax=0.15, ΔT, kwargs...)
 
-        # Preserve the current STGPKF target for logging, but do not use it
-        # to control the environment-agnostic baseline.
-        _, current_q_target_temp = compute_target_spatial_dist(
+        # Evaluate and display the live estimated target; planning remains uniform.
+        _, estimated_q_target = compute_target_spatial_dist(
             Mean, ergo_q_map, w_rated_val, convex_polygon, ergo_grid, env)
         target_spatial_dist = clarity_deficit_from_target(
             uniform_q_target, ergo_q_map, ergo_grid, env)
 
         u = [ErgodicController.controller_single_integrator_cvx_bound(
                 ergo_grid, x, traj, target_spatial_dist, convex_polygon;
-                umax=umax, do_boundary_correction=true) for x in xs]
+                umax=umax, do_boundary_correction=false) for x in xs]
 
-        return u, current_q_target_temp
+        return u, estimated_q_target
     end
 end
 
@@ -351,7 +331,7 @@ end
                 Mean, ergo_q_map, w_rated_val, convex_polygon, ergo_grid, env)
             u = [ErgodicController.controller_single_integrator_cvx_bound(
                     ergo_grid, x, traj, target_spatial_dist, convex_polygon;
-                    umax=umax, do_boundary_correction=true) for x in xs]
+                    umax=umax, do_boundary_correction=false) for x in xs]
             return u, q_target_temp
         end
     end
@@ -386,7 +366,7 @@ end
                 truth_wind, ergo_q_map, w_rated_val, convex_polygon, ergo_grid, env)
             u = [ErgodicController.controller_single_integrator_cvx_bound(
                     ergo_grid, x, traj, target_spatial_dist, convex_polygon;
-                    umax=umax, do_boundary_correction=true) for x in xs]
+                    umax=umax, do_boundary_correction=false) for x in xs]
             return u, q_target_temp
         end
     end
@@ -422,7 +402,7 @@ end
     @inline function bb_reward_fast(x::Float64, y::Float64, target_grid::Matrix{Float64}, 
                                   xs::AbstractVector, ys::AbstractVector, convex_polygon)
         p = @SVector[x, y]
-        if !(p ∈ convex_polygon.polygon)
+        if !(p ∈ convex_polygon.polygon) || !(first(xs) <= x <= last(xs)) || !(first(ys) <= y <= last(ys))
             return -Inf
         end
         ix = clamp(round(Int, (x - xs[1]) / (xs[2] - xs[1])) + 1, 1, size(target_grid, 1))
@@ -488,9 +468,8 @@ function make_nonadaptive_bb_ipp_controller(env; H=5, M_primitives=7, primitive_
     return function (t, xs, Mean, w_rated_val, convex_polygon;
             ergo_grid, ergo_q_map, traj, umax=0.15, ΔT, kwargs...)
 
-        # Preserve the live STGPKF target map for logging. Planning uses the
-        # evolving deficit against a fixed uniform target over the domain.
-        _, current_q_target_temp = compute_target_spatial_dist(
+        # Evaluate and display the live estimated target; planning remains uniform.
+        _, estimated_q_target = compute_target_spatial_dist(
             Mean, ergo_q_map, w_rated_val, convex_polygon, ergo_grid, env)
         target_spatial_dist = clarity_deficit_from_target(
             uniform_q_target, ergo_q_map, ergo_grid, env)
@@ -502,6 +481,11 @@ function make_nonadaptive_bb_ipp_controller(env; H=5, M_primitives=7, primitive_
 
         u_out = Vector{SVector{2,Float64}}(undef, length(xs))
         for (k, x) in enumerate(xs)
+            # Infer heading from actual executed motion.
+            if length(traj) >= 2
+                displacement = traj[end] - traj[end-1]
+                norm(displacement) > 1e-12 && (heading_state[] = atan(displacement[2], displacement[1]))
+            end
             x_start = [x[1], x[2]]
             planning_reward = adaptive_bb_reward_grid(
                 target_spatial_dist, grid_xs, grid_ys, x)
@@ -515,19 +499,18 @@ function make_nonadaptive_bb_ipp_controller(env; H=5, M_primitives=7, primitive_
                 step_heading = atan(centroid[2] - x[2], centroid[1] - x[1])
             else
                 chosen_prim = primitives[z_star[1]]
-                dtheta_step = chosen_prim.dtheta / primitive_stride
+                dtheta_step = chosen_prim.dtheta
                 step_heading = heading_state[] + dtheta_step
             end
 
             u_raw = @SVector[umax * cos(step_heading), umax * sin(step_heading)]
-            u_safe = ErgodicController.convex_bounary_correction(
-                convex_polygon, x, u_raw; speed_max=umax, min_safe_d=0.015)
+            u_safe = u_raw # Shared simulator applies the same boundary limit to every strategy.
 
             heading_state[] = norm(u_safe) > 1e-4 ?
                 atan(u_safe[2], u_safe[1]) : step_heading
             u_out[k] = u_safe
         end
-        return u_out, current_q_target_temp
+        return u_out, estimated_q_target
     end
 end
 
@@ -564,6 +547,11 @@ end
 
             u_out = Vector{SVector{2,Float64}}(undef, length(xs))
             for (k, x) in enumerate(xs)
+                # Infer heading from actual executed motion.
+                if length(traj) >= 2
+                    displacement = traj[end] - traj[end-1]
+                    norm(displacement) > 1e-12 && (heading_state[] = atan(displacement[2], displacement[1]))
+                end
                 x_start = [x[1], x[2]]
                 planning_reward = adaptive_bb_reward_grid(
                     target_clarity_grid, grid_xs, grid_ys, x)
@@ -578,15 +566,13 @@ end
                     step_heading = atan(centroid[2] - x[2], centroid[1] - x[1])
                 else
                     chosen_prim = primitives[z_star[1]]
-                    dtheta_step = chosen_prim.dtheta / primitive_stride
+                    dtheta_step = chosen_prim.dtheta
                     step_heading = heading_state[] + dtheta_step
                 end
 
                 u_raw = @SVector[umax * cos(step_heading), umax * sin(step_heading)]
-                safe_margin_km = 0.015
-                u_safe = ErgodicController.convex_bounary_correction(
-                    convex_polygon, x, u_raw; speed_max=umax, min_safe_d=safe_margin_km
-                )
+
+                u_safe = u_raw # Shared simulator applies the same boundary limit to every strategy.
 
                 if norm(u_safe) > 1e-4
                     heading_state[] = atan(u_safe[2], u_safe[1])
@@ -630,6 +616,11 @@ function make_ground_truth_bb_ipp_controller(env; H=5, M_primitives=7, primitive
 
         u_out = Vector{SVector{2,Float64}}(undef, length(xs))
         for (k, x) in enumerate(xs)
+            # Infer heading from actual executed motion.
+            if length(traj) >= 2
+                displacement = traj[end] - traj[end-1]
+                norm(displacement) > 1e-12 && (heading_state[] = atan(displacement[2], displacement[1]))
+            end
             x_start = [x[1], x[2]]
             planning_reward = adaptive_bb_reward_grid(
                 target_clarity_grid, grid_xs, grid_ys, x)
@@ -643,13 +634,12 @@ function make_ground_truth_bb_ipp_controller(env; H=5, M_primitives=7, primitive
                 step_heading = atan(centroid[2] - x[2], centroid[1] - x[1])
             else
                 chosen_prim = primitives[z_star[1]]
-                dtheta_step = chosen_prim.dtheta / primitive_stride
+                dtheta_step = chosen_prim.dtheta
                 step_heading = heading_state[] + dtheta_step
             end
 
             u_raw = @SVector[umax * cos(step_heading), umax * sin(step_heading)]
-            u_safe = ErgodicController.convex_bounary_correction(
-                convex_polygon, x, u_raw; speed_max=umax, min_safe_d=0.015)
+            u_safe = u_raw # Shared simulator applies the same boundary limit to every strategy.
             heading_state[] = norm(u_safe) > 1e-4 ?
                 atan(u_safe[2], u_safe[1]) : step_heading
             u_out[k] = u_safe
@@ -718,14 +708,13 @@ end
 
     # Targets are emitted on controller timestamps; clarity maps are emitted on
     # filter timestamps. Compare estimated and true targets at each clarity time.
-    target_ts = [first(res.ts); collect(res.ts[1:end-1])]
+    target_ts = res.q_target_ts
     for i in 1:N_q
         metric_time = res.w_hat_ts[i]
         target_idx = clamp(
             searchsortedlast(target_ts, metric_time), 1, length(q_target_maps))
         estimated_target = q_target_maps[target_idx]
-        target_time = target_ts[target_idx]
-        ground_truth_target = ground_truth_target_clarity_map(env, target_time)
+        ground_truth_target = ground_truth_target_clarity_map(env, metric_time)
         achieved_clarity = ergo_q_maps[i]
 
         clarity_deficit_series[i] =
@@ -753,15 +742,19 @@ end
 
     if isfile(outpath)
         data = load(outpath)
+        (get(data, "filter_timing_version", nothing) == SimulatorST.FILTER_TIMING_VERSION &&
+         get(data, "motion_model_version", nothing) == SimulatorST.MOTION_MODEL_VERSION &&
+         get(data, "target_metrics_version", nothing) == "live-estimated-target-v1") ||
+            error("Cached trial uses an older simulation implementation: $outpath. Use a fresh --outdir; do not mix old and corrected runs.")
         meas = data["measurements"]
         rmse_global = data["rmse_global"]
         clarity_deficit = data["clarity_deficit"]
-        gt_clarity_deficit = get(data, "gt_clarity_deficit", clarity_deficit)
+        gt_clarity_deficit = data["gt_clarity_deficit"]
         
-        # Load new RMSEs with fallbacks for backwards compatibility
-        est_clarity_rmse = get(data, "est_clarity_rmse", clarity_deficit)
-        gt_clarity_rmse = get(data, "gt_clarity_rmse", clarity_deficit)
-        target_clarity_rmse = get(data, "target_clarity_rmse", clarity_deficit)
+        # Corrected trials must contain every metric; never substitute another metric.
+        est_clarity_rmse = data["est_clarity_rmse"]
+        gt_clarity_rmse = data["gt_clarity_rmse"]
+        target_clarity_rmse = data["target_clarity_rmse"]
         
         solve_time = get(data, "solve_time", 0.0)
     else
@@ -784,6 +777,12 @@ end
             gt_clarity_rmse = gt_clarity_rmse,
             target_clarity_rmse = target_clarity_rmse,
             solve_time = solve_time,
+            metric_times=res.w_hat_ts, measurement_times=res.measurement_ts,
+            target_times=res.q_target_ts, prediction_steps=res.prediction_steps,
+            filter_timing_version=res.filter_timing_version,
+            motion_model_version=res.motion_model_version,
+            target_metrics_version="live-estimated-target-v1",
+            solar_day=res.solar_day, solar_latitude=res.solar_latitude,
             xs = res.xs,       
             us = res.us,       
             seed = seed,       

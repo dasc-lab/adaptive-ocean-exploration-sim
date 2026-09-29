@@ -16,6 +16,7 @@ function parse_args(args)
         "nworkers"   => string(N_STRATEGIES_DEFAULT),
         "num_mc"     => "5",
         "base_seed"  => "1234",
+        "duration_minutes" => "180.0",
         "w_rated"    => "-3.5",
         "ls"         => "0.75",
         "lt"         => "45.0",
@@ -47,6 +48,10 @@ lt_cmd = parse.(Float64, split(opts["lt"], ","))
 nworkers_requested = parse(Int, opts["nworkers"])
 num_mc = parse(Int, opts["num_mc"])
 base_seed = parse(Int, opts["base_seed"])
+duration_minutes = parse(Float64, opts["duration_minutes"])
+isfinite(duration_minutes) && duration_minutes > 0 || error("duration_minutes must be positive")
+isapprox(duration_minutes * 60 / 2.5, round(duration_minutes * 60 / 2.5); atol=1e-8) ||
+    error("duration must be a multiple of 2.5 seconds")
 seeds = base_seed:(base_seed + num_mc - 1)
 SCRIPT_SRC_DIR = abspath(opts["srcdir"])
 
@@ -84,10 +89,11 @@ end
 # =============================================================================
 # Environment & Controller Definitions (With Worker-Level Caching)
 # =============================================================================
-@everywhere const ENV_CACHE = Dict{Tuple{Int, Float64, Float64}, Any}()
+@everywhere const ENV_CACHE = Dict{Tuple{Int, Float64, Float64, Float64}, Any}()
 
-@everywhere function get_base_environment(; seed=1234, ls_val=0.75, lt_val=45.0)
-    key = (seed, ls_val, lt_val)
+@everywhere function get_base_environment(;
+        seed=1234, ls_val=0.75, lt_val=45.0, duration_minutes=180.0)
+    key = (seed, ls_val, lt_val, duration_minutes)
     if haskey(ENV_CACHE, key)
         return ENV_CACHE[key]
     end
@@ -98,9 +104,10 @@ end
     dt_min  = Δt / 60
     dt_hrs  = Δt / 3600
     T_begin = 9.0
-    T_end   = 12.0
-    ts_hrs  = T_begin:dt_hrs:T_end
-    ts_min  = T_begin*60:dt_min:T_end*60
+    T_end   = T_begin + duration_minutes / 60
+    nsteps = round(Int, duration_minutes / dt_min)
+    ts_hrs = range(T_begin; step=dt_hrs, length=nsteps+1)
+    ts_min = range(T_begin*60; step=dt_min, length=nsteps+1)
 
     σt, σs = 1.0, 1.0
     kt = Matern(1/2, σt, lt_val)
@@ -111,7 +118,17 @@ end
     ys = 0:dx:1.9
     grid_pts = vec([@SVector[x, y] for x in xs, y in ys])
 
-    synthetic_data = STGPKF.generate_spatiotemporal_process(xs, ys, dt_min, (T_end - T_begin) * 60, ks, kt)
+    # The package generator uses a zero-based time axis and omits tmax. Generate
+    # two guard steps, retain the exact mission grid, and rebuild its interpolant
+    # on the absolute clock so the initial and terminal samples are in bounds.
+    relative_data = STGPKF.generate_spatiotemporal_process(
+        xs, ys, dt_min, duration_minutes + 2dt_min, ks, kt)
+    size(relative_data.data, 3) >= length(ts_min) ||
+        error("generated truth does not cover the complete mission time grid")
+    synthetic_data = STGPKF.SpatiotemporalData2D(
+        xs, ys, ts_min, relative_data.data[:, :, 1:length(ts_min)])
+    synthetic_data.itp(first(xs), first(ys), first(ts_min))
+    synthetic_data.itp(last(xs), last(ys), last(ts_min))
 
     problem = STGPKFProblem(grid_pts, ks, kt, dt_min)
     ngpkf_grid = NGPKF.NGPKFGrid(synthetic_data.xs, synthetic_data.ys, ks)
@@ -153,8 +170,10 @@ end
     return base_env
 end
 
-@everywhere function build_environment(; seed=1234, w_rated_val=-3.5, ls_val=0.75, lt_val=45.0)
-    base_env = get_base_environment(; seed=seed, ls_val=ls_val, lt_val=lt_val)
+@everywhere function build_environment(; seed=1234, w_rated_val=-3.5,
+        ls_val=0.75, lt_val=45.0, duration_minutes=180.0)
+    base_env = get_base_environment(;
+        seed=seed, ls_val=ls_val, lt_val=lt_val, duration_minutes=duration_minutes)
     return merge(base_env, (; w_rated_val=w_rated_val))
 end
 
@@ -725,7 +744,7 @@ end
 end
 
 @everywhere function run_task(task_tuple)
-    seed, strategy_name, outdir, w_rated_val, ls_val, lt_val = task_tuple
+    seed, strategy_name, outdir, w_rated_val, ls_val, lt_val, task_duration = task_tuple
     
     filename = @sprintf("trial_seed%d_%s_w%.2f_ls%.2f_lt%.2f.jld2", seed, strategy_name, w_rated_val, ls_val, lt_val)
     outpath = joinpath(outdir, filename)
@@ -748,7 +767,8 @@ end
         
         solve_time = get(data, "solve_time", 0.0)
     else
-        env = build_environment(; seed=seed, w_rated_val=w_rated_val, ls_val=ls_val, lt_val=lt_val)
+        env = build_environment(; seed=seed, w_rated_val=w_rated_val,
+            ls_val=ls_val, lt_val=lt_val, duration_minutes=task_duration)
         # Use a deterministic stream distinct from truth-field generation. Every
         # strategy receives the same measurement noise for a given Monte Carlo
         # realization, independent of worker scheduling and environment caching.
@@ -784,6 +804,7 @@ end
             fusion_dt_minutes=env.fuse_measurements_every_ΔT,
             measurement_noise_std=env.σ_meas,
             measurement_seed=measurement_seed,
+            duration_minutes=task_duration,
             evaluation_target_source=strategy_name in (:bb_ipp_ground_truth, :ergo_ground_truth) ? "ground_truth" : "STGPKF_mean",
             xs = res.xs,
             us = res.us,
@@ -1016,6 +1037,7 @@ function main()
     println("Start Timestamp:  $(Dates.format(SCRIPT_START_TIME, "yyyy-mm-dd HH:MM:SS"))")
     println("Output Directory: $(abspath(data_dir))")
     println("MC Seeds:         $(seeds)")
+    println("Duration (min):   $(duration_minutes)")
     println("Wind Speeds (W):  $(w_rated_cmd)")
     println("Spatial (Ls):     $(ls_cmd)")
     println("Temporal (Lt):    $(lt_cmd)")
@@ -1023,11 +1045,11 @@ function main()
     println("Active Workers:   $(workers())")
     println("="^80)
 
-    tasks = [(seed, strat, data_dir, w, ls, lt) 
-             for seed in seeds 
-             for strat in strategies 
-             for w in w_rated_cmd 
-             for ls in ls_cmd 
+    tasks = [(seed, strat, data_dir, w, ls, lt, duration_minutes)
+             for seed in seeds
+             for strat in strategies
+             for w in w_rated_cmd
+             for ls in ls_cmd
              for lt in lt_cmd]
              
     results = pmap(run_task, tasks)

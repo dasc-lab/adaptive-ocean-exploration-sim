@@ -17,6 +17,21 @@ function create_points(grid_points)
     return new_jordan_pts
 end
 
+"""Build a transect and add waypoints along a vertical boundary.
+
+The boundary points remove dependence on the phase of the regular waypoint grid;
+`inset` keeps them strictly inside the motion polygon.
+"""
+function create_points_with_vertical_boundary(grid_points, polygon, boundary_ys;
+        boundary_x=maximum(polygon.vertices[1, :]), inset=1e-6)
+    inset >= 0 || throw(ArgumentError("inset must be nonnegative"))
+    x = boundary_x - inset
+    candidates = vcat(collect(grid_points), [[x, y] for y in boundary_ys])
+    bounded = unique([p for p in candidates if p in polygon.polygon])
+    isempty(bounded) && throw(ArgumentError("no transect points inside polygon"))
+    return solve_basic(bounded)
+end
+
 
 # pts is a vector of waypoints to go to
 # returns the order of visiting these points
@@ -94,6 +109,32 @@ function west_half_polygon(polygon, split_x; margin=1e-6)
     length(clipped) >= 3 || throw(ArgumentError("west-half polygon is empty"))
     return JordanLakeDomain.ConvexBoundAvoidance.ConvexPolygon(
         LazySets.VPolygon(clipped), hcat(clipped...))
+end
+
+"""Area of a polygon represented by its 2×N vertex matrix."""
+function polygon_area(vertices::AbstractMatrix)
+    size(vertices, 1) == 2 || throw(DimensionMismatch("polygon vertices must be 2×N"))
+    size(vertices, 2) >= 3 || throw(ArgumentError("polygon needs at least three vertices"))
+    signed_twice_area = sum(
+        vertices[1, i] * vertices[2, mod1(i + 1, size(vertices, 2))] -
+        vertices[1, mod1(i + 1, size(vertices, 2))] * vertices[2, i]
+        for i in axes(vertices, 2))
+    return abs(signed_twice_area) / 2
+end
+
+"""Find the vertical cut that divides a convex polygon into equal-area halves."""
+function equal_area_split_x(polygon; atol=1e-12, max_iterations=100)
+    atol > 0 || throw(ArgumentError("atol must be positive"))
+    max_iterations > 0 || throw(ArgumentError("max_iterations must be positive"))
+    target_area = polygon_area(polygon.vertices) / 2
+    lo, hi = extrema(polygon.vertices[1, :])
+    for _ in 1:max_iterations
+        mid = (lo + hi) / 2
+        west_area = polygon_area(west_half_polygon(polygon, mid; margin=0).vertices)
+        abs(west_area - target_area) <= atol && return mid
+        west_area < target_area ? (lo = mid) : (hi = mid)
+    end
+    return (lo + hi) / 2
 end
 
 """Advance the waypoint before steering and never step past the next waypoint.

@@ -85,33 +85,43 @@ end
 end
 
 @testset "Units, waypoint arrival, and west-half confinement" begin
-    poly=Transects.west_half_polygon(JordanLakeDomain.convex_polygon,.8)
-    @test maximum(poly.vertices[1,:]) < .8
-    pts=Transects.solve_basic([p for p in vec([[x,y] for x in .1:.3:2,y in .1:.3:2]) if p in poly.polygon])
+    split_x=Transects.equal_area_split_x(JordanLakeDomain.convex_polygon)
+    poly=Transects.west_half_polygon(JordanLakeDomain.convex_polygon,split_x)
+    exact_west=Transects.west_half_polygon(JordanLakeDomain.convex_polygon,split_x;margin=0)
+    full_area=Transects.polygon_area(JordanLakeDomain.convex_polygon.vertices)
+    @test split_x ≈ 0.6525474113732039 atol=1e-12
+    @test Transects.polygon_area(exact_west.vertices) ≈ full_area/2 atol=1e-12
+    @test maximum(poly.vertices[1,:]) < split_x
+    grid_pts=vec([[x,y] for x in .1:.3:2,y in .1:.3:2])
+    pts=Transects.create_points_with_vertical_boundary(grid_pts,poly,.1:.3:2)
     @test !isempty(pts)
-    @test all(p->p[1]<.8 && p in poly.polygon,pts)
+    @test all(p->p[1]<split_x && p in poly.polygon,pts)
+    @test maximum(first,pts) >= split_x-3e-6
+    @test count(p->p[1]>=split_x-3e-6,pts) >= 4
     c=small_case(n=2,moving=true);r=simulate(c)
     # 1 m/s for 2.5 s is 0.0025 km (old integration was 3.6x too slow).
     @test first(r.xs[2])[1]-first(r.xs[1])[1] ≈ .0025 atol=1e-12
     u,next=Transects.follow_waypoints([SVector(.4,.4)],[[.401,.4],[.6,.4]],1,1.,2.5/60;tolerance=0.)
     @test .4+first(u)[1]*(2.5/1000) ≈ .401
     @test next==1
-    x=SVector(.799,.5)
+    x=SVector(split_x-0.001,.5)
     u=SimulatorST.feasible_velocity(x,SVector(2.,0.),2.5/3600,poly,[0.,1.6],[0.,1.9])
     dest=x+u*2.5/1000
-    @test dest[1] <= .8-1e-6+1e-12
+    @test dest[1] <= split_x-1e-6+1e-12
     @test norm(u) < 2.
     # A complete fast geometrical traversal must stay west, including loop closure.
-    x=SVector(.75,.75);index=1;visited=Set{Int}()
+    x=SVector(split_x-0.05,.75);index=1;visited=Set{Int}();max_x=x[1]
     for _ in 1:20000
         push!(visited,index)
         v,index=Transects.follow_waypoints([x],pts,index,2.,2.5/60)
         safe=SimulatorST.feasible_velocity(x,first(v),2.5/3600,poly,[0.,1.6],[0.,1.9])
         x=x+safe*2.5/1000
-        @test x[1]<.8
+        max_x=max(max_x,x[1])
+        @test x[1]<split_x
         @test x in poly.polygon
     end
     @test length(visited)==length(pts)
+    @test max_x >= split_x-0.011
 end
 
 @testset "Ground-truth metrics use contemporaneous truth" begin

@@ -11,7 +11,8 @@ const T_START_WALL = time()
 
 # ---- Arg Parsing -----------------------------------------------------------
 # Example: julia --project=. revision_sims/run_half_domain_sim.jl --w_rated -3.5 --wind_offset 6.0
-# West: x < 0.8 km, rated wind. East (including the midpoint): rated + offset.
+# West: equal-area portion of the bounded lake polygon, rated wind.
+# East (including the split line): the other equal-area portion, rated + offset.
 # ls/lt are fixed estimator hyperparameters, not truth-field correlation scales.
 const N_STRATEGIES_DEFAULT = 8
 
@@ -112,8 +113,7 @@ end
 end
 @everywhere (wind::HalfDomainWind)(x, y, t) = x < wind.split_x ? wind.west : wind.east
 
-@everywhere function generate_half_domain_data(xs, ys, ts, w_rated_val, wind_offset)
-    split_x = (first(xs) + last(xs)) / 2
+@everywhere function generate_half_domain_data(xs, ys, ts, w_rated_val, wind_offset, split_x)
     wind = HalfDomainWind(split_x, w_rated_val, w_rated_val + wind_offset)
     # All slices are identical; measurement noise is added only by the simulator.
     data = [wind(x, y, t) for x in xs, y in ys, t in ts]
@@ -140,12 +140,14 @@ end
     ys = 0:dx:1.9
     grid_pts = vec([@SVector[x, y] for x in xs, y in ys])
 
-    synthetic_data = generate_half_domain_data(xs, ys, ts_min, w_rated_val, wind_offset)
+    split_x = Transects.equal_area_split_x(JordanLakeDomain.convex_polygon)
+    synthetic_data = generate_half_domain_data(
+        xs, ys, ts_min, w_rated_val, wind_offset, split_x)
 
     problem = STGPKFProblem(grid_pts, ks, kt, dt_min)
     ngpkf_grid = NGPKF.NGPKFGrid(synthetic_data.xs, synthetic_data.ys, ks)
 
-    x0s = [@SVector[0.75, 0.75] for _ in 1:1]
+    x0s = [@SVector[split_x - 0.05, 0.75] for _ in 1:1]
 
     target_q = 0.95
     Nx, Ny = length(xs), length(ys)
@@ -167,8 +169,12 @@ end
     pts = vec([[x, y] for x in transect_xs, y in transect_ys])
     transect_pts = Transects.create_points(pts)
     half_polygon = Transects.west_half_polygon(JordanLakeDomain.convex_polygon, synthetic_data.itp.split_x)
-    half_transect_pts = Transects.solve_basic([p for p in pts if p in half_polygon.polygon])
+    all(p -> p in half_polygon.polygon, x0s) || error("Initial position lies outside interesting half")
+    half_transect_pts = Transects.create_points_with_vertical_boundary(
+        pts, half_polygon, transect_ys)
     isempty(half_transect_pts) && error("No waypoints in interesting half")
+    maximum(first, half_transect_pts) >= synthetic_data.itp.split_x - 3e-6 ||
+        error("Half-transect does not reach the split boundary")
 
     fuse_measurements_every_ΔT     = 5.0 / 60
     recompute_controller_every_ΔT  = 5.0 / (120.0*60)
@@ -885,6 +891,9 @@ function main()
     jldsave(joinpath(data_dir, "environment.jld2");
         xs=env.xs, ys=env.ys, ts_min=env.ts_min,
         wind_map=env.synthetic_data.data[:, :, 1], split_x=wind.split_x,
+        bounded_area=Transects.polygon_area(env.convex_polygon.vertices),
+        west_bounded_area=Transects.polygon_area(
+            Transects.west_half_polygon(env.convex_polygon, wind.split_x; margin=0).vertices),
         west_wind=wind.west, east_wind=wind.east, time_invariant=true,
         full_transect_waypoints=env.transect_pts, half_transect_waypoints=env.half_transect_pts,
         half_polygon_vertices=env.half_polygon.vertices,

@@ -56,6 +56,7 @@ if nprocs() == 1
 end
 
 @everywhere SRC_DIR = $SCRIPT_SRC_DIR
+@everywhere const MONTE_CARLO_VERSION = "matched-measurement-noise-v1"
 
 # =============================================================================
 # Setup Modules & Environment Code Across ALL Workers
@@ -732,7 +733,8 @@ end
     if isfile(outpath)
         data = load(outpath)
         (get(data, "filter_timing_version", nothing) == SimulatorST.FILTER_TIMING_VERSION &&
-         get(data, "target_metrics_version", nothing) == "live-estimated-target-v1") ||
+         get(data, "target_metrics_version", nothing) == "live-estimated-target-v1" &&
+         get(data, "monte_carlo_version", nothing) == MONTE_CARLO_VERSION) ||
             error("Cached trial uses an older simulation implementation: $outpath. Use a fresh --outdir; do not mix old and corrected runs.")
         meas = data["measurements"]
         rmse_global = data["rmse_global"]
@@ -747,6 +749,11 @@ end
         solve_time = get(data, "solve_time", 0.0)
     else
         env = build_environment(; seed=seed, w_rated_val=w_rated_val, ls_val=ls_val, lt_val=lt_val)
+        # Use a deterministic stream distinct from truth-field generation. Every
+        # strategy receives the same measurement noise for a given Monte Carlo
+        # realization, independent of worker scheduling and environment caching.
+        measurement_seed = seed + 1_000_000_000
+        Random.seed!(measurement_seed)
         fn = STRATEGY_FNS[strategy_name]
         
         t0 = time()
@@ -769,10 +776,18 @@ end
             target_times=res.q_target_ts, prediction_steps=res.prediction_steps,
             filter_timing_version=res.filter_timing_version,
             target_metrics_version="live-estimated-target-v1",
+            monte_carlo_version=MONTE_CARLO_VERSION,
             solar_day=res.solar_day, solar_latitude=res.solar_latitude,
-            xs = res.xs,       
-            us = res.us,       
-            seed = seed,       
+            measurement_positions=res.measurement_positions,
+            applied_speeds=res.speeds, battery_history=res.bs,
+            sampling_dt_minutes=env.dt_min,
+            fusion_dt_minutes=env.fuse_measurements_every_ΔT,
+            measurement_noise_std=env.σ_meas,
+            measurement_seed=measurement_seed,
+            evaluation_target_source=strategy_name in (:bb_ipp_ground_truth, :ergo_ground_truth) ? "ground_truth" : "STGPKF_mean",
+            xs = res.xs,
+            us = res.us,
+            seed = seed,
             strategy = string(strategy_name)
         )
     end
@@ -988,6 +1003,13 @@ function main()
     datetime_str = Dates.format(SCRIPT_START_TIME, "yyyymmdd_HHMMSS")
     data_dir = joinpath(opts["outdir"], datetime_str)
     mkpath(data_dir)
+    snapshot_dir = joinpath(data_dir, "source_snapshot")
+    mkpath(snapshot_dir)
+    cp(SCRIPT_SRC_DIR, joinpath(snapshot_dir, "src"))
+    cp(@__FILE__, joinpath(snapshot_dir, basename(@__FILE__)))
+    for name in ("Project.toml", "Manifest.toml")
+        cp(joinpath(dirname(Base.active_project()), name), joinpath(snapshot_dir, name))
+    end
 
     println("="^80)
     println("Monte Carlo Parameter Sweep Routine")

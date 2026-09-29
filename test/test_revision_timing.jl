@@ -152,65 +152,39 @@ end
     end
 end
 
-@testset "BB primitive prediction agrees with single-integrator execution" begin
-    c=small_case()
-    env=(;synthetic_data=c.env,Δt=2.5,convex_polygon=JordanLakeDomain.convex_polygon)
-    grid=SimulatorST.ErgoGrid(c.grid,(2,2))
-    x=SVector(.45,.44)
-    # Previous displacement supplies a nonzero actual heading, independent of the
-    # controller's internal initial heading. Target the upper half to force a turn.
-    heading=.2
-    traj=[x-.0025*SVector(cos(heading),sin(heading)),x]
-    achieved=[.94 0.; .94 0.]
-    mean_field=[2.5 -3.5;2.5 -3.5]
-    primitives=get_motion_primitives(1.,.05,3)
-    for make_controller in (make_nonadaptive_bb_ipp_controller,make_adaptive_bb_ipp_controller)
-        controller=make_controller(env;H=1,M_primitives=3,primitive_stride=20)
-        _,qt=compute_target_spatial_dist(mean_field,achieved,-3.5,env.convex_polygon,grid,env)
-        reward_base=make_controller===make_nonadaptive_bb_ipp_controller ?
-            clarity_deficit_from_target(uniform_target_clarity_map(env,env.convex_polygon),achieved,grid,env) :
-            target_clarity_reward_grid(qt,grid,env)
-        reward=adaptive_bb_reward_grid(reward_base,c.env.xs,c.env.ys,x)
-        z,gamma=path_planning_bb_fast(collect(x),heading,1,primitives,maximum(reward),reward,c.env.xs,c.env.ys,env.convex_polygon)
-        @test isfinite(gamma)
-        chosen=primitives[z[1]]
-        @test abs(chosen.dtheta)>0.1
-        expected=SVector(cos(heading+chosen.dtheta),sin(heading+chosen.dtheta))
-        u,_=controller(c.ts[1],[x],mean_field,-3.5,env.convex_polygon;
-            ergo_grid=grid,ergo_q_map=achieved,traj,umax=1.,ΔT=c.dt)
-        @test first(u) ≈ expected atol=1e-12
-        # Hold the chosen command for the predicted primitive duration. Every
-        # executed substep must stay feasible and land on the predicted endpoint.
-        pos=x
-        for _ in 1:20
-            safe=SimulatorST.feasible_velocity(pos,first(u),2.5/3600,env.convex_polygon,c.env.xs,c.env.ys)
-            @test safe ≈ first(u) atol=1e-12
-            pos+=safe*.0025
-        end
-        @test pos ≈ x+.05*expected atol=1e-12
+@testset "Ergodic boundary steering preserves commanded speed" begin
+    poly=JordanLakeDomain.convex_polygon
+    center=vec(sum(poly.vertices;dims=2))/size(poly.vertices,2)
+    positions=[SVector(.4,.4)]
+    for i in axes(poly.vertices,2)
+        a=poly.vertices[:,i];b=poly.vertices[:,mod1(i+1,size(poly.vertices,2))]
+        push!(positions,SVector{2}(a))
+        push!(positions,SVector{2}((a+b)/2))
+        push!(positions,SVector{2}(.99a+.01center))
     end
-    # Reward lookup must reject endpoints beyond the execution grid, not clamp
-    # them to an edge cell while predicting motion the simulator cannot execute.
-    @test bb_reward_fast(.51,.45,ones(2,2),c.env.xs,c.env.ys,env.convex_polygon)==-Inf
-    @test simulate(c).motion_model_version==SimulatorST.MOTION_MODEL_VERSION
-end
-
-@testset "Ergodic uses shared execution boundaries without a private buffer" begin
-    c=small_case()
-    env=(;synthetic_data=c.env,Δt=2.5,convex_polygon=JordanLakeDomain.convex_polygon)
-    grid=SimulatorST.ErgoGrid(c.grid,(2,2))
-    x=[SVector(.401,.42)]
-    achieved=[.8 .2;.4 .1]
-    target=clarity_deficit_from_target(uniform_target_clarity_map(env,env.convex_polygon),achieved,grid,env)
-    expected=ErgodicController.controller_single_integrator_cvx_bound(grid,first(x),x,target,env.convex_polygon;umax=1.,do_boundary_correction=false)
-    controller=make_nonadaptive_ergo_controller(env)
-    u,_=controller(c.ts[1],x,zeros(2,2),-3.5,env.convex_polygon;
-        ergo_grid=grid,ergo_q_map=achieved,traj=x,umax=1.,ΔT=c.dt)
-    @test first(u) ≈ expected
-    @test norm(first(u)) ≈ 1.
-    # Safety clips an outward step; an inward step remains unchanged, without
-    # an inward heuristic or re-normalization of the limited command.
-    outward=SimulatorST.feasible_velocity(first(x),SVector(-1.,0.),2.5/3600,env.convex_polygon,c.env.xs,c.env.ys)
-    @test outward ≈ SVector(-.4,0.) atol=1e-12
-    @test SimulatorST.feasible_velocity(first(x),SVector(1.,0.),2.5/3600,env.convex_polygon,c.env.xs,c.env.ys) == SVector(1.,0.)
+    for p in positions, speed in (0.,.15,1.,1.8), angle in (0.,pi/2,pi,3pi/2)
+        raw=speed*SVector(cos(angle),sin(angle))
+        corrected=ErgodicController.convex_bounary_correction(poly,p,raw;
+            speed_max=speed,preserve_speed=true)
+        @test all(isfinite,corrected)
+        @test norm(corrected) ≈ speed atol=1e-12
+    end
+    p=SVector(.4,.4)
+    distance,closest=ErgodicController.ConvexBoundAvoidance.minimum_distance_to_boundary(poly,p)
+    inward=ErgodicController.ConvexBoundAvoidance.normal_vector_to_centroid(poly,closest)
+    raw=-1.3inward
+    # Exact cancellation previously stopped the vehicle halfway through the buffer.
+    corrected=ErgodicController.convex_bounary_correction(poly,p,raw;
+        speed_max=1.3,min_safe_d=2distance,preserve_speed=true)
+    @test corrected ≈ 1.3inward atol=1e-12
+    # The default helper behavior remains unchanged for BB-IPP.
+    @test norm(ErgodicController.convex_bounary_correction(poly,p,raw;
+        speed_max=1.3,min_safe_d=2distance)) < 1e-12
+    c=small_case();grid=SimulatorST.ErgoGrid(c.grid,(2,2))
+    target=[.1 .9;.2 .8]
+    for speed in (.15,1.,1.8)
+        corrected=ErgodicController.controller_single_integrator_cvx_bound(
+            grid,SVector(.43,.46),[SVector(.43,.46)],target,poly;umax=speed)
+        @test norm(corrected) ≈ speed atol=1e-12
+    end
 end

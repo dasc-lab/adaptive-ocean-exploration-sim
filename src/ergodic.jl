@@ -228,7 +228,7 @@ end
 
 
 
-function convex_bounary_correction(convex_polygon, p, u; speed_max = 1.8, min_safe_d = 0.4)
+function convex_bounary_correction(convex_polygon, p, u; speed_max = 1.8, min_safe_d = 0.4, preserve_speed = false)
 
     # Compute the closest point on the boundary of the convex shape to the robot pos p
     distance, closest_point = ConvexBoundAvoidance.minimum_distance_to_boundary(convex_polygon, p)
@@ -241,11 +241,17 @@ function convex_bounary_correction(convex_polygon, p, u; speed_max = 1.8, min_sa
     # Compute the adjusted velocity vector
     u_cmd = min(1, (distance/min_safe_d)) * u + max(0, (1 - (distance/min_safe_d)))*uff
     
-    # debugging
-    # println("u_ergo: $(u)")
-    # println("speed: $(speed)")
-    # pritnln("field force input: $(uff)")
-    # pritnln("commanded velocity: $(u_cmd)")
+    if preserve_speed
+        # Boundary blending chooses direction only. Preserve the incoming command
+        # magnitude, including an intentional zero command. When opposing vectors
+        # cancel, use the inward direction instead of normalizing a zero vector.
+        commanded_speed = norm(u)
+        iszero(commanded_speed) && return zero(u)
+        blended_speed = norm(u_cmd)
+        direction = blended_speed > 1e-12 * max(commanded_speed, abs(speed_max)) ?
+            u_cmd / blended_speed : normal_vector
+        return commanded_speed * direction
+    end
 
     return u_cmd
 end
@@ -347,7 +353,7 @@ function controller_single_integrator_cvx_bound(grid, p, traj, M, convex_polygon
     u_ergo = norm(b_ergo) > 0 ? -umax * normalize(b_ergo) : @SVector[0.0, 0.0]
     if do_boundary_correction
         # return boundary_correction_discrete_time(grid, p, u_ergo; ΔT)
-        return convex_bounary_correction(convex_polygon, p, u_ergo; speed_max = umax)
+        return convex_bounary_correction(convex_polygon, p, u_ergo; speed_max = umax, preserve_speed = true)
     else
         return u_ergo
     end

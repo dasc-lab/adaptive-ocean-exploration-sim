@@ -1,6 +1,5 @@
 # Included inside SimulatorST. This engine is shared by the revision-simulation
 # adaptive and transect runners; legacy experiment entry points remain separate.
-const MOTION_MODEL_VERSION = "shared-hard-boundary-instant-heading-v1"
 const FILTER_TIMING_VERSION = "timestamped-sequential-v1"
 
 """Convert a cadence to integer simulation steps, avoiding floating-point drift."""
@@ -168,5 +167,5 @@ function simulate_timed_mission(ts, x0, b0, controller, soc_profile,
     return (; ts=times, xs, us, speeds, bs, measurements, measurement_ts,
         measurement_positions, w_hat_ts, w_hats, ergo_q_maps, q_target_maps,
         q_target_ts, prediction_steps, filter_timing_version=FILTER_TIMING_VERSION,
-        motion_model_version=MOTION_MODEL_VERSION, filter_state=state, solar_day, solar_latitude)
+        filter_state=state, solar_day, solar_latitude)
 end

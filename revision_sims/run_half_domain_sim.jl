@@ -336,7 +336,7 @@ function make_nonadaptive_ergo_controller(env)
 
         u = [ErgodicController.controller_single_integrator_cvx_bound(
                 ergo_grid, x, traj, target_spatial_dist, convex_polygon;
-                umax=umax, do_boundary_correction=false) for x in xs]
+                umax=umax, do_boundary_correction=true) for x in xs]
 
         return u, estimated_q_target
     end
@@ -362,7 +362,7 @@ end
                 Mean, ergo_q_map, w_rated_val, convex_polygon, ergo_grid, env)
             u = [ErgodicController.controller_single_integrator_cvx_bound(
                     ergo_grid, x, traj, target_spatial_dist, convex_polygon;
-                    umax=umax, do_boundary_correction=false) for x in xs]
+                    umax=umax, do_boundary_correction=true) for x in xs]
             return u, q_target_temp
         end
     end
@@ -397,7 +397,7 @@ end
                 truth_wind, ergo_q_map, w_rated_val, convex_polygon, ergo_grid, env)
             u = [ErgodicController.controller_single_integrator_cvx_bound(
                     ergo_grid, x, traj, target_spatial_dist, convex_polygon;
-                    umax=umax, do_boundary_correction=false) for x in xs]
+                    umax=umax, do_boundary_correction=true) for x in xs]
             return u, q_target_temp
         end
     end
@@ -433,7 +433,7 @@ end
     @inline function bb_reward_fast(x::Float64, y::Float64, target_grid::Matrix{Float64}, 
                                   xs::AbstractVector, ys::AbstractVector, convex_polygon)
         p = @SVector[x, y]
-        if !(p ∈ convex_polygon.polygon) || !(first(xs) <= x <= last(xs)) || !(first(ys) <= y <= last(ys))
+        if !(p ∈ convex_polygon.polygon)
             return -Inf
         end
         ix = clamp(round(Int, (x - xs[1]) / (xs[2] - xs[1])) + 1, 1, size(target_grid, 1))
@@ -512,11 +512,6 @@ function make_nonadaptive_bb_ipp_controller(env; H=5, M_primitives=7, primitive_
 
         u_out = Vector{SVector{2,Float64}}(undef, length(xs))
         for (k, x) in enumerate(xs)
-            # Infer heading from actual executed motion.
-            if length(traj) >= 2
-                displacement = traj[end] - traj[end-1]
-                norm(displacement) > 1e-12 && (heading_state[] = atan(displacement[2], displacement[1]))
-            end
             x_start = [x[1], x[2]]
             planning_reward = adaptive_bb_reward_grid(
                 target_spatial_dist, grid_xs, grid_ys, x)
@@ -530,12 +525,13 @@ function make_nonadaptive_bb_ipp_controller(env; H=5, M_primitives=7, primitive_
                 step_heading = atan(centroid[2] - x[2], centroid[1] - x[1])
             else
                 chosen_prim = primitives[z_star[1]]
-                dtheta_step = chosen_prim.dtheta
+                dtheta_step = chosen_prim.dtheta / primitive_stride
                 step_heading = heading_state[] + dtheta_step
             end
 
             u_raw = @SVector[umax * cos(step_heading), umax * sin(step_heading)]
-            u_safe = u_raw # Shared simulator applies the same boundary limit to every strategy.
+            u_safe = ErgodicController.convex_bounary_correction(
+                convex_polygon, x, u_raw; speed_max=umax, min_safe_d=0.015)
 
             heading_state[] = norm(u_safe) > 1e-4 ?
                 atan(u_safe[2], u_safe[1]) : step_heading
@@ -578,11 +574,6 @@ end
 
             u_out = Vector{SVector{2,Float64}}(undef, length(xs))
             for (k, x) in enumerate(xs)
-                # Infer heading from actual executed motion.
-                if length(traj) >= 2
-                    displacement = traj[end] - traj[end-1]
-                    norm(displacement) > 1e-12 && (heading_state[] = atan(displacement[2], displacement[1]))
-                end
                 x_start = [x[1], x[2]]
                 planning_reward = adaptive_bb_reward_grid(
                     target_clarity_grid, grid_xs, grid_ys, x)
@@ -597,13 +588,15 @@ end
                     step_heading = atan(centroid[2] - x[2], centroid[1] - x[1])
                 else
                     chosen_prim = primitives[z_star[1]]
-                    dtheta_step = chosen_prim.dtheta
+                    dtheta_step = chosen_prim.dtheta / primitive_stride
                     step_heading = heading_state[] + dtheta_step
                 end
 
                 u_raw = @SVector[umax * cos(step_heading), umax * sin(step_heading)]
-
-                u_safe = u_raw # Shared simulator applies the same boundary limit to every strategy.
+                safe_margin_km = 0.015
+                u_safe = ErgodicController.convex_bounary_correction(
+                    convex_polygon, x, u_raw; speed_max=umax, min_safe_d=safe_margin_km
+                )
 
                 if norm(u_safe) > 1e-4
                     heading_state[] = atan(u_safe[2], u_safe[1])
@@ -647,11 +640,6 @@ function make_ground_truth_bb_ipp_controller(env; H=5, M_primitives=7, primitive
 
         u_out = Vector{SVector{2,Float64}}(undef, length(xs))
         for (k, x) in enumerate(xs)
-            # Infer heading from actual executed motion.
-            if length(traj) >= 2
-                displacement = traj[end] - traj[end-1]
-                norm(displacement) > 1e-12 && (heading_state[] = atan(displacement[2], displacement[1]))
-            end
             x_start = [x[1], x[2]]
             planning_reward = adaptive_bb_reward_grid(
                 target_clarity_grid, grid_xs, grid_ys, x)
@@ -665,12 +653,13 @@ function make_ground_truth_bb_ipp_controller(env; H=5, M_primitives=7, primitive
                 step_heading = atan(centroid[2] - x[2], centroid[1] - x[1])
             else
                 chosen_prim = primitives[z_star[1]]
-                dtheta_step = chosen_prim.dtheta
+                dtheta_step = chosen_prim.dtheta / primitive_stride
                 step_heading = heading_state[] + dtheta_step
             end
 
             u_raw = @SVector[umax * cos(step_heading), umax * sin(step_heading)]
-            u_safe = u_raw # Shared simulator applies the same boundary limit to every strategy.
+            u_safe = ErgodicController.convex_bounary_correction(
+                convex_polygon, x, u_raw; speed_max=umax, min_safe_d=0.015)
             heading_state[] = norm(u_safe) > 1e-4 ?
                 atan(u_safe[2], u_safe[1]) : step_heading
             u_out[k] = u_safe
@@ -850,7 +839,6 @@ end
         measurement_times=res.measurement_ts, measurement_positions=res.measurement_positions,
         target_times=res.q_target_ts, prediction_steps=res.prediction_steps,
         filter_timing_version=res.filter_timing_version,
-        motion_model_version=res.motion_model_version,
         solar_day=res.solar_day, solar_latitude=res.solar_latitude,
         battery_history=res.bs, applied_speeds=res.speeds,
         sampling_dt_minutes=env.dt_min,
@@ -901,7 +889,6 @@ function main()
         full_transect_waypoints=env.transect_pts, half_transect_waypoints=env.half_transect_pts,
         half_polygon_vertices=env.half_polygon.vertices,
         filter_timing_version=SimulatorST.FILTER_TIMING_VERSION,
-        motion_model_version=SimulatorST.MOTION_MODEL_VERSION,
         w_rated=w_rated_val, wind_offset, ls=ls_val, lt=lt_val, seed)
 
     tasks = [(strategy, seed, data_dir, animation_seconds, animation_fps) for strategy in strategies]

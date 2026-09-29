@@ -1,6 +1,6 @@
 # Corrected revision simulations (28 September 2026)
 
-Run from the repository root with the existing Julia environment. Existing results are preserved. **Rerun all strategies being compared:** the corrected runs are not numerically comparable with the earlier trajectories or metrics, including the September 28 morning runs.
+Run from the repository root with the existing Julia environment. Existing results are preserved. **Rerun all strategies being compared:** the corrected runs are not numerically comparable with the September 25 trajectories or metrics.
 
 ## PI sanity check first
 
@@ -95,19 +95,19 @@ Shell syntax and mocked launches were validated locally, including repository-ro
 - Nonadaptive strategies plan against a fixed uniform target, but continue to compute, save, display and score live STGPKF-derived target maps. `est_deficit`, `est_clarity_rmse` and target-map RMSE use that live estimated target. `gt_deficit` continues to use the ground-truth target. The uniform planning target is saved separately as `fixed_planning_target`; the time-varying evaluation maps are `evaluation_target_maps`. Nonadaptive videos label this distinction explicitly. Planning demand still updates with achieved clarity against the fixed uniform target; the initial demand distribution is not frozen.
 - Nonzero extra `Q_process` now raises an error instead of being silently ignored: STGPKF process covariance comes from its temporal kernel. The shared-SOC simulator explicitly supports one vehicle instead of silently mishandling multiple vehicles.
 
-## Shared motion and boundary policy (28 September)
+## Boundary-change rollback
 
-All three revision runners now disable planner-local boundary corrections. Every strategy uses the shared simulator's hard, one-step feasibility limiter against the motion polygon and estimator grid. There is no planner-specific inward buffer: the previous 400 m ergodic and 15 m BB-IPP corrections are removed. Feasible commands are unchanged; commands that would cross a boundary are scaled to end at that boundary. The limiter never increases speed or changes heading. The half-domain transect retains its explicitly restricted motion polygon. An outward command at an edge can be stopped by this policy; this is a common constraint, not an inward steering heuristic.
+The September 28 boundary/motion changes have been reverted to the version used by the September 28 morning runs. Ergodic and BB-IPP again use their earlier planner-specific boundary correction, and BB-IPP again executes its incremental heading change. The earlier filter-timing and live-target evaluation fixes and the HPC jobs remain. Results from the reverted boundary experiment should be kept separate from new runs.
 
-All strategies use an instantaneous-heading single-integrator model. BB-IPP now applies the full selected primitive heading immediately, instead of dividing its turn by 20. It replans at the configured control cadence; at fixed speed, the executed step is a prefix of the predicted straight primitive. Actual previous displacement supplies the next search heading. BB search rejects endpoints outside either the polygon or estimator grid. Because both are convex, the complete straight segment between feasible endpoints is feasible. A failed search uses the existing centroid fallback, subject to the same execution limiter.
+## Ergodic speed-preserving boundary steering
 
-The primitive horizon still assumes the current speed and reward map remain fixed; later replanning and SOC-dependent speed changes can change the future trajectory. Planner rewards, horizon, and candidate directions are still algorithmic differences. These changes remove the identified motion inconsistencies, not those deliberate differences, and do not guarantee equal travel distance or any metric ranking.
+Ergodic's existing inward boundary blend now determines direction only: its output is rescaled to the incoming command's magnitude. If outward and inward vectors cancel, the controller selects the inward direction at that same speed. An intentional zero command remains zero. BB-IPP's boundary correction and incremental heading execution are unchanged. The simulator's final hard feasibility limiter remains in place and can still shorten a step that would leave the admissible domain; it is not renormalized after clipping.
 
 ## Reproducibility and limitations
 
-New controlled trials save acquisition times/positions, target timestamps, all filter means/clarity maps, all evaluation targets and fixed nonadaptive planning targets, applied speeds, battery history, prediction counts, noise level, timing version and motion-model version. Each controlled run also copies the runner, diagnostics, src directory, Project.toml and Manifest.toml into `source_snapshot`. Expect larger trial files and more computation: exact sequential correction performs an update for each acquisition rather than incorrectly batching different times as simultaneous.
+New controlled trials save acquisition times/positions, target timestamps, all filter means/clarity maps, all evaluation targets and fixed nonadaptive planning targets, applied speeds, battery history, prediction counts, noise level and timing version. Each controlled run also copies the runner, diagnostics, src directory, Project.toml and Manifest.toml into `source_snapshot`. Expect larger trial files and more computation: exact sequential correction performs an update for each acquisition rather than incorrectly batching different times as simultaneous.
 
-Monte Carlo uses the corrected shared engine and scoring timestamps too. It refuses cached trials with a different/missing timing, target-metric, or motion-model version; use a fresh output directory. Legacy simulation functions outside the three revision comparison runners have not been rewritten and should not be used to generate matched comparisons with these results.
+Monte Carlo uses the corrected shared engine and scoring timestamps too. It refuses cached trials with a different/missing timing or target-metric version; use a fresh output directory. Legacy simulation functions outside the three revision comparison runners have not been rewritten and should not be used to generate matched comparisons with these results.
 
 The sharp/static half-domain truth still deliberately differs from the smooth, finite-temporal-scale GP model. Ground-truth deficit measures unmet estimator clarity, not independently calibrated physical accuracy. This implementation correction does not assume or guarantee any strategy ranking.
 
@@ -120,5 +120,3 @@ julia --project=. test/test_revision_timing.jl
 ```
 
 The numerical suite checks posterior means and covariances against an independent dense Kalman filter, fusion-cadence invariance for a fixed path, terminal flushing, controller timestamps, current-time truth scoring, one energy step per interval, the 1 m/s distance conversion, waypoint arrival and complete west-half route confinement.
-
-Motion regression tests additionally force a nonzero BB turn, recover heading from executed motion, and integrate all 20 substeps to check the predicted endpoint. Grid-exterior candidates must be rejected. An ergodic regression checks that its command matches the unconstrained controller before the common execution limiter, and that the limiter preserves inward commands while clipping outward commands.

@@ -198,3 +198,18 @@ end
         @test norm(corrected) ≈ speed atol=1e-12
     end
 end
+
+
+@testset "Interpolation bounds tolerate roundoff only" begin
+    xs = 0.0:0.05:0.1
+    ys = 0.0:0.05:0.1
+    ts = 540.0:0.5:541.0
+    env = (; xs, ys, ts, itp=(x, y, t) -> x + 2y + 3t)
+    Random.seed!(1234)
+    expected = env.itp(0.05, 0.0, 540.5)
+    @test SimulatorST.measure(env, 0.05, -4eps(Float64), 540.5, 0.0) == expected
+    @test SimulatorST.measure(env, 0.05, 0.05, last(ts) + 4eps(last(ts)), 0.0) ==
+        env.itp(0.05, 0.05, last(ts))
+    @test_throws DomainError SimulatorST.measure(env, 0.05, -1e-9, 540.5, 0.0)
+    @test_throws DomainError SimulatorST.measure(env, 0.11, 0.05, 540.5, 0.0)
+end

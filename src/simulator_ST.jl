@@ -30,8 +30,24 @@ function measure(t, ps::VSV, data::EDST; σ_meas=0, Q_meas = σ_meas * I) where 
   return [measure(t, p, data; σ_meas=σ_meas, Q_meas=Q_meas) for p in ps]
 end
 
+function interpolation_coordinate(z, axis, name)
+  lo, hi = extrema(axis)
+  tol = 64eps(Float64) * max(abs(float(lo)), abs(float(hi)), 1.0)
+  if z < lo
+    z >= lo - tol || throw(DomainError(z, "$name coordinate is below interpolation bound $lo"))
+    return lo
+  elseif z > hi
+    z <= hi + tol || throw(DomainError(z, "$name coordinate is above interpolation bound $hi"))
+    return hi
+  end
+  return z
+end
+
 function measure(data, x, y, t, σ_m=0.1)
-  return data.itp(x, y, t) + σ_m * randn()
+  xq = interpolation_coordinate(x, data.xs, "x")
+  yq = interpolation_coordinate(y, data.ys, "y")
+  tq = interpolation_coordinate(t, data.ts, "time")
+  return data.itp(xq, yq, tq) + σ_m * randn()
 end
 
 function measure_reconstruction(data, t_idx)

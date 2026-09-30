@@ -126,6 +126,7 @@ end
 
 @testset "Ground-truth metrics use contemporaneous truth" begin
     env=(; synthetic_data=(;xs=[0.1,0.2],ys=[0.1,0.2]),w_rated_val=-3.5,
+        lambda_cd=0.25,
         convex_polygon=JordanLakeDomain.convex_polygon,
         ts_min=[0.,1.,2.],dt_min=1.)
     # Different truth slices make a one-step lag observable.
@@ -141,7 +142,8 @@ end
 
 @testset "Nonadaptive planning is uniform; evaluation target follows estimates" begin
     c=small_case()
-    env=(; synthetic_data=c.env, Δt=2.5, convex_polygon=JordanLakeDomain.convex_polygon)
+    env=(; synthetic_data=c.env, Δt=2.5, lambda_cd=0.25,
+        convex_polygon=JordanLakeDomain.convex_polygon)
     grid=SimulatorST.ErgoGrid(c.grid,(2,2))
     achieved=fill(.5,2,2)
     x=[SVector(.4,.4)]
@@ -197,6 +199,21 @@ end
             grid,SVector(.43,.46),[SVector(.43,.46)],target,poly;umax=speed)
         @test norm(corrected) ≈ speed atol=1e-12
     end
+end
+
+@testset "Zero target-clarity decay is the uniform-target limit" begin
+    c=small_case()
+    env=(; synthetic_data=c.env, Δt=2.5, lambda_cd=0.0,
+        convex_polygon=JordanLakeDomain.convex_polygon)
+    grid=SimulatorST.ErgoGrid(c.grid,(2,2))
+    achieved=fill(.5,2,2)
+    mean_map=[-3.5 2.5; 0.0 -10.0]
+    demand,target=compute_target_spatial_dist(
+        mean_map,achieved,-3.5,env.convex_polygon,grid,env)
+    uniform=uniform_target_clarity_map(env,env.convex_polygon)
+    expected=clarity_deficit_from_target(uniform,achieved,grid,env)
+    @test target == uniform
+    @test demand ≈ expected
 end
 
 

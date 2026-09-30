@@ -27,6 +27,7 @@ function parse_args(args)
         "animation_fps" => "10",
         "ls"         => "0.75",
         "lt"         => "45.0",
+        "lambda_cd"  => "0.25",
         "strategies" => "transect,transect_half,bb_ipp_nonadaptive,bb_ipp_adaptive,bb_ipp_ground_truth,ergo_nonadaptive,ergo_adaptive,ergo_ground_truth",
         "outdir"     => joinpath(@__DIR__, "results_half_domain"),
         "srcdir"     => joinpath(@__DIR__, "../", "src"),
@@ -52,6 +53,7 @@ w_rated_val = parse(Float64, opts["w_rated"])
 wind_offset = parse(Float64, opts["wind_offset"])
 ls_val = parse(Float64, opts["ls"])
 lt_val = parse(Float64, opts["lt"])
+lambda_cd = parse(Float64, opts["lambda_cd"])
 animation_seconds = parse(Float64, opts["animation_seconds"])
 animation_fps = parse(Int, opts["animation_fps"])
 0 < animation_seconds <= 30 || error("animation_seconds must be in (0, 30]")
@@ -62,9 +64,10 @@ isfinite(duration_minutes) && duration_minutes > 0 || error("duration_minutes mu
 isapprox(duration_minutes * 60 / 2.5, round(duration_minutes * 60 / 2.5); atol=1e-8) || error("duration must be a multiple of 2.5 seconds")
 seed = parse(Int, opts["seed"])
 nworkers_requested = parse(Int, opts["nworkers"])
-all(isfinite, (w_rated_val, wind_offset, ls_val, lt_val)) || error("Parameters must be finite")
+all(isfinite, (w_rated_val, wind_offset, ls_val, lt_val, lambda_cd)) || error("Parameters must be finite")
 abs(wind_offset) > 1.0 || error("wind_offset must lie outside the ±1 normalized wind speed target band")
 ls_val > 0 && lt_val > 0 || error("ls and lt must be positive")
+lambda_cd >= 0 || error("lambda_cd must be nonnegative")
 nworkers_requested >= 0 || error("nworkers must be nonnegative")
 supported = Set([:transect, :transect_half, :bb_ipp_nonadaptive, :bb_ipp_adaptive, :bb_ipp_ground_truth,
     :ergo_nonadaptive, :ergo_adaptive, :ergo_ground_truth])
@@ -121,7 +124,7 @@ end
 end
 
 @everywhere function build_environment(; w_rated_val=-3.5, wind_offset=6.0,
-        ls_val=0.75, lt_val=45.0, duration_minutes=360.0)
+        ls_val=0.75, lt_val=45.0, lambda_cd=0.25, duration_minutes=360.0)
     Δt      = 2.5
     dt_min  = Δt / 60
     dt_hrs  = Δt / 3600
@@ -187,7 +190,7 @@ end
             transect_pts, half_polygon, half_transect_pts, fuse_measurements_every_ΔT, recompute_controller_every_ΔT,
             σ_meas, σ_t, convex_polygon = JordanLakeDomain.convex_polygon)
 
-    return merge(base_env, (; w_rated_val, wind_offset, ls_val, lt_val))
+    return merge(base_env, (; w_rated_val, wind_offset, ls_val, lt_val, lambda_cd))
 end
 
 # =============================================================================
@@ -208,8 +211,7 @@ end
         Nx, Ny = length(env.synthetic_data.xs), length(env.synthetic_data.ys)
         w_rated = ones(Nx, Ny) .* w_rated_val
 
-        lambda_param = 0.25
-        delta = -lambda_param .* ((Mean .- w_rated) .^ 2)
+        delta = -env.lambda_cd .* ((Mean .- w_rated) .^ 2)
         q_target_temp = target_q .* exp.(delta)
 
         x_domain, y_domain = env.synthetic_data.xs, env.synthetic_data.ys
@@ -702,7 +704,7 @@ end
 
 @everywhere function ground_truth_target_clarity_map(env, t)
     truth_map = ground_truth_wind_map(env, t)
-    target = 0.95 .* exp.(-0.25 .* ((truth_map .- env.w_rated_val) .^ 2))
+    target = 0.95 .* exp.(-env.lambda_cd .* ((truth_map .- env.w_rated_val) .^ 2))
     for i in eachindex(env.synthetic_data.xs), j in eachindex(env.synthetic_data.ys)
         if !([env.synthetic_data.xs[i], env.synthetic_data.ys[j]] in env.convex_polygon.polygon)
             target[i, j] = 0.0
@@ -859,9 +861,10 @@ end
         target_clarity_rmse=tgt_c_rmse, xs=res.xs, us=res.us,
         animation=animation_samples(res, env; seconds=animation_seconds, fps=animation_fps),
         w_rated=env.w_rated_val, wind_offset=env.wind_offset,
-        ls=env.ls_val, lt=env.lt_val)
+        ls=env.ls_val, lt=env.lt_val, lambda_cd=env.lambda_cd)
     errors = measurements .- env.w_rated_val
-    return (; strategy=string(strategy), rmse=mean(rmse),
+    return (; environment="half_domain", lambda_cd=env.lambda_cd,
+        strategy=string(strategy), rmse=mean(rmse),
         est_clarity_rmse=mean(est_c_rmse), gt_clarity_rmse=mean(gt_c_rmse),
         target_clarity_rmse=mean(tgt_c_rmse), est_deficit=mean(deficit),
         gt_deficit=mean(gt_deficit), solve_time, error_mean=mean(errors),
@@ -880,13 +883,13 @@ function main()
     for name in ("Project.toml", "Manifest.toml")
         cp(joinpath(dirname(Base.active_project()), name), joinpath(snapshot_dir, name))
     end
-    config = (; w_rated_val, wind_offset, ls_val, lt_val, duration_minutes)
+    config = (; w_rated_val, wind_offset, ls_val, lt_val, lambda_cd, duration_minutes)
     @everywhere HALF_DOMAIN_CONFIG = $config
     env = build_environment(; config...)
     wind = env.synthetic_data.itp
     println("Single static half-domain comparison")
     println("West (x < $(wind.split_x) km): $(wind.west) normalized wind speed; east: $(wind.east) normalized wind speed")
-    println("Strategies: $(strategies); measurement-noise seed: $seed")
+    println("Strategies: $(strategies); measurement-noise seed: $seed; lambda_cd: $lambda_cd")
     println("Output directory: $(abspath(data_dir))")
     jldsave(joinpath(data_dir, "environment.jld2");
         xs=env.xs, ys=env.ys, ts_min=env.ts_min,
@@ -898,7 +901,7 @@ function main()
         full_transect_waypoints=env.transect_pts, half_transect_waypoints=env.half_transect_pts,
         half_polygon_vertices=env.half_polygon.vertices,
         filter_timing_version=SimulatorST.FILTER_TIMING_VERSION,
-        w_rated=w_rated_val, wind_offset, ls=ls_val, lt=lt_val, seed)
+        w_rated=w_rated_val, wind_offset, ls=ls_val, lt=lt_val, lambda_cd, seed)
 
     tasks = [(strategy, seed, data_dir, animation_seconds, animation_fps) for strategy in strategies]
     rows = nprocs() == 1 ? map(run_task, tasks) : pmap(run_task, tasks)
@@ -944,6 +947,7 @@ function main()
     # Save the synchronized estimated-target / ground-truth deficit comparison (PNG and PDF).
     HalfDomainDiagnostics.plot_deficits(data_dir)
     HalfDomainDiagnostics.plot_rmse(data_dir)
+    HalfDomainDiagnostics.plot_measurement_histograms(data_dir)
     for strategy in strategies
         trial = load(joinpath(data_dir, "trial_$(strategy).jld2"))
         animate_strategy(strategy, trial, env, joinpath(data_dir, "animations"))

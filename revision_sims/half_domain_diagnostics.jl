@@ -9,6 +9,45 @@ const STRATEGY_LABELS = ["Transect", "Transect (interesting half)", "BB-IPP unif
     "Ergodic (Ground Truth)"]
 const STRATEGY_COLORS = [:gray, :deeppink, :peru, :orangered, :purple, :steelblue, :navy, :seagreen]
 
+"""Plot empirical distributions of the measurements collected by each strategy."""
+function plot_measurement_histograms(data_dir)
+    series = NamedTuple[]
+    for (i, strategy) in enumerate(STRATEGY_ORDER)
+        path = joinpath(data_dir, "trial_$(strategy).jld2")
+        isfile(path) || continue
+        trial = load(path)
+        measurements = Float64.(vec(trial["measurements"]))
+        isempty(measurements) && error("No measurements in $path")
+        label = @sprintf("%s (μ=%.2f, σ=%.2f)", STRATEGY_LABELS[i],
+            mean(measurements), std(measurements))
+        push!(series, (; measurements, label, color=STRATEGY_COLORS[i],
+            rated=Float64(trial["w_rated"])))
+    end
+    isempty(series) && error("No saved measurements found in $data_dir")
+    all_measurements = reduce(vcat, [s.measurements for s in series])
+    lo, hi = extrema(all_measurements)
+    lo == hi && (lo -= 0.5; hi += 0.5)
+    edges = range(lo, hi; length=36)
+    fig = Figure(size=(1500, 850), fontsize=14)
+    ax = Axis(fig[1, 1]; title="Distribution of collected measurements",
+        xlabel="Measured normalized wind speed", ylabel="Probability")
+    for s in series
+        hist!(ax, s.measurements; bins=edges, normalization=:probability,
+            color=(s.color, 0.10), strokecolor=s.color, strokewidth=2,
+            label=s.label)
+    end
+    vlines!(ax, [first(series).rated]; color=:red, linestyle=:dash,
+        linewidth=2, label="Rated wind")
+    Legend(fig[2, 1], ax; orientation=:horizontal, nbanks=2,
+        tellwidth=false, framevisible=false)
+    outdir = joinpath(data_dir, "figures")
+    mkpath(outdir)
+    for extension in ("png", "pdf")
+        save(joinpath(outdir, "measurement_histograms.$extension"), fig)
+    end
+    return nothing
+end
+
 """Replot synchronized saved maps without rerunning the missions.
 Ground-truth BB-IPP and ergodic use ground-truth targets rather than STGPKF targets.
 Ergodic (Ground Truth) uses a ground-truth target, not an STGPKF-derived target.
@@ -256,6 +295,7 @@ end
 if abspath(PROGRAM_FILE) == @__FILE__
     length(ARGS) == 1 || error("Usage: julia --project=. revision_sims/half_domain_diagnostics.jl RESULTS_DIRECTORY")
     HalfDomainDiagnostics.plot_rmse(ARGS[1])
+    HalfDomainDiagnostics.plot_measurement_histograms(ARGS[1])
     for row in HalfDomainDiagnostics.plot_deficits(ARGS[1])
         println(row)
     end

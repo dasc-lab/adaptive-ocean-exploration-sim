@@ -1,0 +1,21 @@
+Repository: /home/kmgovind/adaptive-ocean-exploration-sim
+Turbo output: /nfs/turbo/coe-corelab/kmgovind/jordan-lake-sims/results_lambda_cd_sweep/slurm_62796139/task_14/attempt_0
+Slurm job: 62796139; workers: 1; Julia/BLAS threads: 1
+julia version 1.11.4
+Environment: moving_pocket; lambda_cd: 0.75; strategies: ergo_adaptive
+      From worker 2:	┌ Warning: Replacing docs for `Main.Variograms.hp_fit :: Tuple{Any}` in module `Main.Variograms`
+      From worker 2:	└ @ Base.Docs docs/Docs.jl:243
+      From worker 2:	WARNING: method definition for #simulate_prerec_traj#72 at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2293 declares type variable XS but does not use it.
+      From worker 2:	WARNING: method definition for simulate_prerec_traj at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2293 declares type variable X but does not use it.
+      From worker 2:	WARNING: method definition for simulate_prerec_traj at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2293 declares type variable X but does not use it.
+┌ Warning: Replacing docs for `Main.Variograms.hp_fit :: Tuple{Any}` in module `Main.Variograms`
+└ @ Base.Docs docs/Docs.jl:243
+WARNING: method definition for #simulate_prerec_traj#72 at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2293 declares type variable XS but does not use it.
+WARNING: method definition for simulate_prerec_traj at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2293 declares type variable X but does not use it.
+WARNING: method definition for simulate_prerec_traj at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2293 declares type variable X but does not use it.
+Single moving-pocket environment comparison
+Background: 2.5 normalized wind speed; pocket centers approach rated wind -3.5
+Strategies: [:ergo_adaptive]; measurement-noise seed: 1234; lambda_cd: 0.75
+Output directory: /nfs/turbo/coe-corelab/kmgovind/jordan-lake-sims/results_lambda_cd_sweep/slurm_62796139/task_14/attempt_0/20260930_125035
+Animation saved: /nfs/turbo/coe-corelab/kmgovind/jordan-lake-sims/results_lambda_cd_sweep/slurm_62796139/task_14/attempt_0/20260930_125035/animations/ergo_adaptive.mp4 (2.0 s)
+Comparison complete in 3957.13 s: /nfs/turbo/coe-corelab/kmgovind/jordan-lake-sims/results_lambda_cd_sweep/slurm_62796139/task_14/attempt_0/20260930_125035

@@ -1,0 +1,2 @@
+strategy,target_source,frames,estimated_deficit,gt_deficit,west_clarity,west_target,west_underweighted
+ergo_adaptive,STGPKF_mean,4321,1.6411868384587036e-5,0.00445233283814838,0.6355086528931294,0.01054712550414074,0.9931179615515868

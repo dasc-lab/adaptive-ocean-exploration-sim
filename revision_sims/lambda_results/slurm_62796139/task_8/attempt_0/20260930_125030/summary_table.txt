@@ -1,0 +1,6 @@
+SINGLE MOVING-POCKET ENVIRONMENT COMPARISON
+Background=2.5, pocket centers=-3.5 normalized wind speed
+One run per strategy; metrics are mission averages, without Monte Carlo uncertainty.
+Strategy                         RMSE   GT deficit  In-target %     Time (s)
+ergo_nonadaptive               1.5474       0.1656        10.97      3347.64
+ergo_adaptive                  1.5474       0.1656        10.97      3101.68

@@ -1,0 +1,2 @@
+environment,lambda_cd,strategy,rmse,est_clarity_rmse,gt_clarity_rmse,target_clarity_rmse,est_deficit,gt_deficit,solve_time,error_mean,error_std,in_target
+half_domain,0.5,ergo_adaptive,2.8202474463595664,0.5004184067718327,0.5073697985171912,0.4266677891406412,0.001258846042847314,0.10435329340026242,3391.623072862625,1.7039356661792309,2.749985807030645,68.40643444045828

@@ -9,9 +9,11 @@ q_target(p,t) = 0.95 exp(-lambda_cd (w_hat(p,t) - w_rated)^2).
 The sweep uses `lambda_cd = 0, 0.025, 0.05, 0.1, 0.25, 0.5, 0.75, 1.0`
 for both the static half-domain and moving-pocket environments. The existing
 paper value is 0.25. All other parameters and the measurement-noise seed are
-held fixed. At zero, the array job runs both `ergo_adaptive` and
-`ergo_nonadaptive`; their trajectories and metrics should agree up to
-floating-point noise because the adaptive target becomes spatially constant.
+held fixed. Every decay-rate task runs the complete original strategy set:
+eight strategies for the half-domain environment and seven for the moving-
+pocket environment. At zero, `ergo_adaptive` and `ergo_nonadaptive` should
+agree up to floating-point noise because the adaptive target becomes spatially
+constant; the same check applies to the corresponding BB-IPP pair.
 
 Submit from the repository root or `revision_sims`:
 
@@ -34,8 +36,14 @@ After retrieving the complete job directory, aggregate and plot it with:
 julia --project=. revision_sims/aggregate_lambda_cd_sweep.jl PATH_TO_SLURM_JOB
 ```
 
-The aggregator writes a combined CSV, metric-sweep plots, and collected-
-measurement histograms as PDF and PNG files. Histogram legend labels report
-the empirical measurement mean and standard deviation for every decay rate and
-for the explicit non-adaptive reference. It also prints the lambda-zero
-differences between the adaptive and explicit non-adaptive runs.
+The aggregator writes one combined CSV plus a separate set of figures for each
+environment. For example, the half-domain outputs are
+`half_domain_lambda_cd_sweep.*`,
+`half_domain_sampling_reconstruction_tradeoff.*`, and
+`half_domain_measurement_histograms.*`; the moving-pocket files use the
+`moving_pocket_` prefix. Metric figures compare all strategies as functions of
+the decay rate. Tradeoff figures use one panel per strategy, and measurement
+histograms use strategies as rows and decay rates as columns. Each histogram
+panel reports the empirical measurement mean and standard deviation for that
+run. The aggregator also prints the lambda-zero differences between the
+adaptive and explicit non-adaptive ergodic runs.

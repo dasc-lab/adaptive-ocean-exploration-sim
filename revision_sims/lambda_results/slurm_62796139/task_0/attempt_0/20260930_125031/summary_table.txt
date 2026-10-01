@@ -1,0 +1,6 @@
+SINGLE STATIC HALF-DOMAIN COMPARISON
+West=-3.5, east=2.5 normalized wind speed; split=0.6525474113732816 km
+One run per strategy; metrics are mission averages, without Monte Carlo uncertainty.
+Strategy                         RMSE   GT deficit  In-target %     Time (s)
+ergo_nonadaptive               1.6707       0.1653        46.66      3486.67
+ergo_adaptive                  1.6707       0.1653        46.66      3368.37

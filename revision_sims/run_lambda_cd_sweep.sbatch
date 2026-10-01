@@ -4,7 +4,7 @@
 #SBATCH --partition=standard
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=2
+#SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=12G
 #SBATCH --time=3:00:00
 #SBATCH --array=0-15
@@ -45,10 +45,14 @@ esac
 
 prepare_revision_job "results_lambda_cd_sweep"
 
-strategies="ergo_adaptive"
-if [[ "$lambda_cd" == "0" ]]; then
-    strategies="ergo_nonadaptive,ergo_adaptive"
-fi
+case "$environment" in
+    half_domain)
+        strategies="transect,transect_half,bb_ipp_nonadaptive,bb_ipp_adaptive,bb_ipp_ground_truth,ergo_nonadaptive,ergo_adaptive,ergo_ground_truth"
+        ;;
+    moving_pocket)
+        strategies="transect,bb_ipp_nonadaptive,bb_ipp_adaptive,bb_ipp_ground_truth,ergo_nonadaptive,ergo_adaptive,ergo_ground_truth"
+        ;;
+esac
 
 echo "Environment: $environment; lambda_cd: $lambda_cd; strategies: $strategies"
 julia --project="$REPO_ROOT" "$runner" \

@@ -1,0 +1,57 @@
+Repository: /home/kmgovind/adaptive-ocean-exploration-sim
+Turbo output: /nfs/turbo/coe-corelab/kmgovind/jordan-lake-sims/results_lambda_cd_sweep/slurm_62968554/task_12/attempt_0
+Slurm job: 62968554; workers: 7; Julia/BLAS threads: 1
+julia version 1.11.4
+Environment: moving_pocket; lambda_cd: 0.25; strategies: transect,bb_ipp_nonadaptive,bb_ipp_adaptive,bb_ipp_ground_truth,ergo_nonadaptive,ergo_adaptive,ergo_ground_truth
+      From worker 5:	┌ Warning: Replacing docs for `Main.Variograms.hp_fit :: Tuple{Any}` in module `Main.Variograms`
+      From worker 5:	└ @ Base.Docs docs/Docs.jl:243
+      From worker 8:	┌ Warning: Replacing docs for `Main.Variograms.hp_fit :: Tuple{Any}` in module `Main.Variograms`
+      From worker 8:	└ @ Base.Docs docs/Docs.jl:243
+      From worker 4:	┌ Warning: Replacing docs for `Main.Variograms.hp_fit :: Tuple{Any}` in module `Main.Variograms`
+      From worker 4:	└ @ Base.Docs docs/Docs.jl:243
+      From worker 6:	┌ Warning: Replacing docs for `Main.Variograms.hp_fit :: Tuple{Any}` in module `Main.Variograms`
+      From worker 6:	└ @ Base.Docs docs/Docs.jl:243
+      From worker 2:	┌ Warning: Replacing docs for `Main.Variograms.hp_fit :: Tuple{Any}` in module `Main.Variograms`
+      From worker 2:	└ @ Base.Docs docs/Docs.jl:243
+      From worker 3:	┌ Warning: Replacing docs for `Main.Variograms.hp_fit :: Tuple{Any}` in module `Main.Variograms`
+      From worker 3:	└ @ Base.Docs docs/Docs.jl:243
+      From worker 7:	┌ Warning: Replacing docs for `Main.Variograms.hp_fit :: Tuple{Any}` in module `Main.Variograms`
+      From worker 7:	└ @ Base.Docs docs/Docs.jl:243
+      From worker 5:	WARNING: method definition for #simulate_prerec_traj#72 at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2293 declares type variable XS but does not use it.
+      From worker 5:	WARNING: method definition for simulate_prerec_traj at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2293 declares type variable X but does not use it.
+      From worker 5:	WARNING: method definition for simulate_prerec_traj at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2293 declares type variable X but does not use it.
+      From worker 8:	WARNING: method definition for #simulate_prerec_traj#72 at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2293 declares type variable XS but does not use it.
+      From worker 8:	WARNING: method definition for simulate_prerec_traj at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2293 declares type variable X but does not use it.
+      From worker 8:	WARNING: method definition for simulate_prerec_traj at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2293 declares type variable X but does not use it.
+      From worker 2:	WARNING: method definition for #simulate_prerec_traj#72 at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2293 declares type variable XS but does not use it.
+      From worker 2:	WARNING: method definition for simulate_prerec_traj at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2293 declares type variable X but does not use it.
+      From worker 2:	WARNING: method definition for simulate_prerec_traj at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2293 declares type variable X but does not use it.
+      From worker 6:	WARNING: method definition for #simulate_prerec_traj#72 at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2293 declares type variable XS but does not use it.
+      From worker 6:	WARNING: method definition for simulate_prerec_traj at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2293 declares type variable X but does not use it.
+      From worker 6:	WARNING: method definition for simulate_prerec_traj at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2293 declares type variable X but does not use it.
+      From worker 3:	WARNING: method definition for #simulate_prerec_traj#72 at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2293 declares type variable XS but does not use it.
+      From worker 3:	WARNING: method definition for simulate_prerec_traj at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2293 declares type variable X but does not use it.
+      From worker 3:	WARNING: method definition for simulate_prerec_traj at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2293 declares type variable X but does not use it.
+      From worker 4:	WARNING: method definition for #simulate_prerec_traj#72 at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2293 declares type variable XS but does not use it.
+      From worker 4:	WARNING: method definition for simulate_prerec_traj at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2293 declares type variable X but does not use it.
+      From worker 4:	WARNING: method definition for simulate_prerec_traj at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2293 declares type variable X but does not use it.
+      From worker 7:	WARNING: method definition for #simulate_prerec_traj#72 at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2293 declares type variable XS but does not use it.
+      From worker 7:	WARNING: method definition for simulate_prerec_traj at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2293 declares type variable X but does not use it.
+      From worker 7:	WARNING: method definition for simulate_prerec_traj at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2293 declares type variable X but does not use it.
+┌ Warning: Replacing docs for `Main.Variograms.hp_fit :: Tuple{Any}` in module `Main.Variograms`
+└ @ Base.Docs docs/Docs.jl:243
+WARNING: method definition for #simulate_prerec_traj#72 at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2293 declares type variable XS but does not use it.
+WARNING: method definition for simulate_prerec_traj at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2293 declares type variable X but does not use it.
+WARNING: method definition for simulate_prerec_traj at /home/kmgovind/adaptive-ocean-exploration-sim/src/simulator_spatial.jl:2293 declares type variable X but does not use it.
+Single moving-pocket environment comparison
+Background: 2.5 normalized wind speed; pocket centers approach rated wind -3.5
+Strategies: [:transect, :bb_ipp_nonadaptive, :bb_ipp_adaptive, :bb_ipp_ground_truth, :ergo_nonadaptive, :ergo_adaptive, :ergo_ground_truth]; measurement-noise seed: 1234; lambda_cd: 0.25
+Output directory: /nfs/turbo/coe-corelab/kmgovind/jordan-lake-sims/results_lambda_cd_sweep/slurm_62968554/task_12/attempt_0/20261001_091311
+Animation saved: /nfs/turbo/coe-corelab/kmgovind/jordan-lake-sims/results_lambda_cd_sweep/slurm_62968554/task_12/attempt_0/20261001_091311/animations/transect.mp4 (2.0 s)
+Animation saved: /nfs/turbo/coe-corelab/kmgovind/jordan-lake-sims/results_lambda_cd_sweep/slurm_62968554/task_12/attempt_0/20261001_091311/animations/bb_ipp_nonadaptive.mp4 (2.0 s)
+Animation saved: /nfs/turbo/coe-corelab/kmgovind/jordan-lake-sims/results_lambda_cd_sweep/slurm_62968554/task_12/attempt_0/20261001_091311/animations/bb_ipp_adaptive.mp4 (2.0 s)
+Animation saved: /nfs/turbo/coe-corelab/kmgovind/jordan-lake-sims/results_lambda_cd_sweep/slurm_62968554/task_12/attempt_0/20261001_091311/animations/bb_ipp_ground_truth.mp4 (2.0 s)
+Animation saved: /nfs/turbo/coe-corelab/kmgovind/jordan-lake-sims/results_lambda_cd_sweep/slurm_62968554/task_12/attempt_0/20261001_091311/animations/ergo_nonadaptive.mp4 (2.0 s)
+Animation saved: /nfs/turbo/coe-corelab/kmgovind/jordan-lake-sims/results_lambda_cd_sweep/slurm_62968554/task_12/attempt_0/20261001_091311/animations/ergo_adaptive.mp4 (2.0 s)
+Animation saved: /nfs/turbo/coe-corelab/kmgovind/jordan-lake-sims/results_lambda_cd_sweep/slurm_62968554/task_12/attempt_0/20261001_091311/animations/ergo_ground_truth.mp4 (2.0 s)
+Comparison complete in 4111.58 s: /nfs/turbo/coe-corelab/kmgovind/jordan-lake-sims/results_lambda_cd_sweep/slurm_62968554/task_12/attempt_0/20261001_091311

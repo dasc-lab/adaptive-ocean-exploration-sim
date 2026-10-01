@@ -1,0 +1,12 @@
+SINGLE STATIC HALF-DOMAIN COMPARISON
+West=-3.5, east=2.5 normalized wind speed; split=0.6525474113732816 km
+One run per strategy; metrics are mission averages, without Monte Carlo uncertainty.
+Strategy                         RMSE   GT deficit  In-target %     Time (s)
+transect                       1.5518       0.1747        43.19      4942.95
+transect_half                  3.4234       0.1734        95.68      4922.22
+bb_ipp_nonadaptive             2.3392       0.2165        15.02      4938.91
+bb_ipp_adaptive                2.2067       0.2041        24.01      4916.57
+bb_ipp_ground_truth            2.2067       0.2041        24.01      4930.42
+ergo_nonadaptive               1.6707       0.1653        46.66      4953.86
+ergo_adaptive                  1.6707       0.1653        46.66      4922.94
+ergo_ground_truth              1.6707       0.1653        46.66      3333.41

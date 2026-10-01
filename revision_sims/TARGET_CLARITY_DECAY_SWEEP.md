@@ -42,7 +42,9 @@ environment. For example, the half-domain outputs are
 `half_domain_sampling_reconstruction_tradeoff.*`, and
 `half_domain_measurement_histograms.*`; the moving-pocket files use the
 `moving_pocket_` prefix. Metric figures compare all strategies as functions of
-the decay rate. Tradeoff figures use one panel per strategy, and measurement
+the decay rate and show both the deficit against each run's own target and the
+deficit against a common `lambda_cd = 0.25` reference target. Tradeoff figures
+use one panel per strategy, and measurement
 histograms use strategies as rows and decay rates as columns. Each histogram
 panel reports the empirical measurement mean and standard deviation for that
 run. The aggregator also prints the lambda-zero differences between the

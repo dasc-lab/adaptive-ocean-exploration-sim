@@ -1,98 +1,134 @@
-# Target-clarity decay sweep: analysis
+# Target-clarity decay sweep: consolidated analysis
 
-## Data integrity
+## Scope and integrity
 
-- All 16 array tasks completed: eight decay rates in each of the static
-  half-domain and moving-pocket environments.
-- No failures were found in the saved job logs.
-- At `lambda_cd = 0`, the adaptive and explicit non-adaptive ergodic runs are
-  numerically identical in both environments for RMSE, clarity deficit, and
-  in-target measurement percentage. This confirms the limiting-case argument.
-- These are matched deterministic runs with one measurement-noise seed, not
-  Monte Carlo estimates. Small differences and apparent optima should not yet
-  be interpreted as statistically robust.
+- This analysis uses only `slurm_62968554`, the new complete sweep. The older
+  `slurm_62796139` job contains 18 ergodic-focused rows and is excluded to avoid
+  double counting.
+- The new job contains all 120 expected runs: eight decay rates for eight
+  half-domain strategies (64 runs) and seven moving-pocket strategies (56).
+- Each condition is one matched deterministic run with seed 1234. The sweep
+  measures sensitivity, not between-seed uncertainty.
+- Strategies whose planning rule does not use `lambda_cd` reproduce identical
+  trajectories, RMSE, and measurement distributions across the sweep. Their
+  repeated points are controls, not independent replications.
 
-## Metric interpretation
+## Comparable metrics
 
-The target-clarity map changes with `lambda_cd`; consequently, the native
-ground-truth clarity deficit has a different target at every sweep point and is
-not directly comparable across decay rates. The aggregate CSV and sensitivity
-plot therefore include `reference_deficit`, which evaluates every saved
-trajectory against the same ground-truth target generated with
-`lambda_cd = 0.25`.
+The native ground-truth deficit is evaluated against a target that changes with
+`lambda_cd`, so its downward trend is partly definitional. The consolidated CSV
+therefore recomputes `reference_deficit` against one fixed ground-truth target
+with `lambda_cd = 0.25`. Both quantities are retained and plotted:
 
-The most interpretable cross-sweep metrics are therefore:
+- `gt_deficit` measures how well each strategy satisfies the target generated
+  by that run's own decay-rate parameter;
+- `reference_deficit` holds the target fixed and supports direct comparisons
+  across decay rates.
 
-1. percentage of measurements within one normalized wind-speed unit of rated;
+Cross-rate interpretation should emphasize:
+
+1. measurements within one normalized wind-speed unit of rated;
 2. global wind-field RMSE;
-3. deficit against the fixed `lambda_cd = 0.25` target; and
-4. the complete empirical measurement distributions.
+3. fixed-reference clarity deficit; and
+4. the full empirical measurement distributions.
 
-## Static half-domain environment
+## Half-domain environment
 
-The response has a broad useful range from approximately `0.025` to `0.25`:
+The fixed baselines expose the intended tradeoff. The full transect gives the
+lowest global RMSE (1.552), while the oracle half-domain transect gives the
+highest in-target fraction (95.68%) and a low reference deficit (0.0768), at the
+cost of the worst global RMSE (3.423).
 
-| lambda_cd | In target (%) | Global RMSE | Fixed-reference deficit |
-|---:|---:|---:|---:|
-| 0 | 46.66 | 1.671 | 0.0862 |
-| 0.025 | 91.96 | 2.101 | 0.0867 |
-| 0.05 | 92.84 | 2.535 | 0.0932 |
-| 0.1 | 95.21 | 2.686 | 0.0959 |
-| 0.25 | 95.57 | 2.839 | 0.0943 |
+For adaptive ergodic control, `lambda_cd = 0.025` is the clearest balanced knee:
 
-`lambda_cd = 0.025` is the clearest knee point. Relative to the non-adaptive
-limit, it raises the in-target fraction by 45.30 percentage points while
-increasing global RMSE by about 25.7%. Increasing the decay rate from `0.025`
-to `0.25` gains only another 3.61 percentage points in target-focused sampling,
-but increases RMSE by a further 35.2% relative to the `0.025` run.
+| lambda_cd | Global RMSE | Own-target deficit | Fixed-reference deficit | In target (%) |
+|---:|---:|---:|---:|---:|
+| 0 | 1.671 | 0.16525 | 0.08619 | 46.66 |
+| 0.025 | 2.101 | 0.08669 | 0.08669 | 91.96 |
+| 0.05 | 2.535 | 0.09317 | 0.09317 | 92.84 |
+| 0.1 | 2.686 | 0.09590 | 0.09590 | 95.21 |
+| 0.25 | 2.839 | 0.09425 | 0.09425 | 95.57 |
 
-The histogram panels explain the abrupt loss above `0.25`. At `0.1` and `0.25`,
-the collected measurements form a narrow mode around rated wind. At `0.5` and
-above, a second mode near the uninteresting eastern value reappears. Thus an
-excessively sharp target does not simply make the controller more selective;
-it changes the closed-loop trajectory enough to lose sustained concentration.
+Moving from zero to 0.025 gains 45.30 percentage points of targeted sampling
+for a 25.7% RMSE increase. Moving from 0.025 to 0.25 gains only another 3.61
+points while increasing RMSE by a further 35.2%. Above 0.25 the response is
+non-monotonic and targeted sampling falls sharply.
+
+Adaptive BB-IPP reacts more abruptly: every positive rate produces roughly
+94--95% in-target sampling. Its best fixed-reference deficit is 0.08044 at
+`lambda_cd = 0.75`, but 0.025 is almost as good (0.08101) with lower RMSE
+(2.672 versus 2.722). Thus 0.025 is also the most economical BB-IPP setting.
+
+The oracle strategies are useful upper-information benchmarks, but they do not
+dominate every metric. Oracle ergodic control has the best reference deficit
+(0.07163 for every positive rate) while the half-domain transect has the highest
+in-target fraction. This reinforces that global reconstruction, target-focused
+sampling, and target-region clarity are distinct objectives.
 
 ## Moving-pocket environment
 
-The moving-pocket response is more sharply tuned and strongly non-monotonic:
+The moving case is harder and more strongly non-monotonic. Fixed broad-coverage
+baselines have good global RMSE but collect few near-rated samples: transect
+RMSE is 1.366 with 7.79% in target; non-adaptive ergodic RMSE is 1.547 with
+10.97% in target.
 
-| lambda_cd | In target (%) | Global RMSE | Fixed-reference deficit |
-|---:|---:|---:|---:|
-| 0 | 10.97 | 1.547 | 0.00825 |
-| 0.025 | 38.79 | 1.902 | 0.00888 |
-| 0.05 | 46.64 | 2.119 | 0.01007 |
-| 0.1 | 79.53 | 2.397 | 0.01048 |
-| 0.25 | 32.36 | 1.958 | 0.01031 |
+Adaptive ergodic control produces the largest focused-sampling response:
 
-`lambda_cd = 0.1` maximizes mission-focused sampling, improving the in-target
-fraction by 68.56 percentage points over the non-adaptive limit, at the cost of
-about 54.9% higher global RMSE. Its histogram is tightly concentrated near the
-rated value. This indicates successful tracking rather than a small change in
-the thresholded metric.
+| lambda_cd | Global RMSE | Own-target deficit | Fixed-reference deficit | In target (%) |
+|---:|---:|---:|---:|---:|
+| 0 | 1.547 | 0.16562 | 0.00825 | 10.97 |
+| 0.025 | 1.902 | 0.03772 | 0.00888 | 38.79 |
+| 0.05 | 2.119 | 0.02645 | 0.01007 | 46.64 |
+| 0.1 | 2.397 | 0.01760 | 0.01048 | 79.53 |
+| 0.25 | 1.958 | 0.01031 | 0.01031 | 32.36 |
+| 0.5 | 1.860 | 0.00708 | 0.01047 | 20.32 |
+| 0.75 | 1.699 | 0.00552 | 0.01004 | 15.23 |
+| 1.0 | 1.721 | 0.00445 | 0.00944 | 19.70 |
 
-The current paper value `0.25` is strictly dominated by `0.025` in this run:
-`0.025` has higher in-target sampling (38.79% versus 32.36%), lower global RMSE
-(1.902 versus 1.958), and lower fixed-reference deficit (0.00888 versus
-0.01031). Values above `0.25` progressively return toward broad, predominantly
-off-target sampling.
+`lambda_cd = 0.1` is the mission-focus optimum in this run, improving the
+in-target fraction by 68.56 percentage points over zero, but with 54.9% higher
+global RMSE. The current paper value 0.25 is dominated by 0.025 here: 0.025 has
+higher in-target sampling, lower RMSE, and lower reference deficit.
 
-## Recommended interpretation
+Adaptive BB-IPP is less sensitive once the rate is positive. Its in-target
+fraction rises from 29.00% at 0.025 to a maximum of 34.74% at 0.25, while RMSE
+stays near 2.3 and reference deficit stays near 0.0097. This is more stable but
+does not achieve the 79.53% peak of adaptive ergodic control.
 
-There is no environment-independent optimum in these data. The decay rate acts
-as a closed-loop selectivity parameter and creates a sampling-versus-global-
-reconstruction tradeoff. Moderate positive values consistently improve
-mission-focused sampling over the uniform-target limit, but very sharp targets
-can degrade tracking.
+Oracle ergodic control gives the smallest moving-pocket reference deficit
+(0.00657 at 0.025) and maintains about 41--48% in-target sampling for positive
+rates. Oracle BB-IPP, surprisingly, collects only about 1.6--2.3% in-target
+measurements. That result should be explained from its reward and trajectory,
+not interpreted as a general failure of ground-truth information.
 
-For the current deterministic evidence:
+## Limiting-case discrepancy
 
-- `0.025` is a defensible balanced setting and the half-domain knee point.
-- `0.1` is the strongest mission-focused setting and is clearly preferred in
-  the moving-pocket case when near-rated sampling is the primary objective.
-- `0.25` is defensible for the static half-domain result but should not be
-  presented as generally robust or optimal.
+Ergodic adaptive and non-adaptive runs are exactly identical at
+`lambda_cd = 0` in both environments, supporting the intended limiting-case
+argument.
 
-Before selecting a final paper value, repeat at least the most informative
-settings (`0`, `0.025`, `0.05`, `0.1`, and `0.25`) over multiple measurement-
-noise seeds. Report median and interquartile range or mean and confidence
-interval for in-target percentage, global RMSE, and fixed-reference deficit.
+BB-IPP does **not** satisfy the same test. At zero, adaptive BB-IPP differs from
+non-adaptive BB-IPP by:
+
+- half-domain: RMSE -0.133, deficit -0.0123, in-target +8.99 points;
+- moving pocket: RMSE +0.274, deficit +0.0516, in-target -5.21 points.
+
+The implementation explains this discrepancy. Non-adaptive BB-IPP plans over
+the current clarity deficit relative to a uniform target, whereas adaptive
+BB-IPP plans over the target-clarity map itself. Setting the target map uniform
+does not make these rewards equal. Consequently, BB-IPP should not be used as
+evidence for the zero-decay equivalence unless the reward definitions are
+aligned and the affected sweep is rerun.
+
+## Recommended paper interpretation
+
+- Treat `lambda_cd` as a selectivity parameter with an explicit tradeoff, not a
+  parameter having one universal optimum.
+- Use 0.025 as the balanced setting supported across both environments.
+- Use 0.1 when maximizing moving-target sample acquisition is the primary aim.
+- Do not claim that 0.25 is robustly optimal; it is competitive in the static
+  environment but dominated in the moving-pocket adaptive-ergodic run.
+- Base cross-rate clarity claims on the fixed-reference deficit, not the native
+  deficit whose target changes with the swept parameter.
+- Repeat the key rates (0, 0.025, 0.05, 0.1, 0.25) over multiple seeds before
+  making inferential or statistical claims.

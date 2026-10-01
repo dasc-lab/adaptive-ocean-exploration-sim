@@ -83,9 +83,11 @@ strategy_labels = Dict(
     "ergo_nonadaptive" => "Ergodic non-adaptive",
     "ergo_adaptive" => "Ergodic adaptive",
     "ergo_ground_truth" => "Ergodic ground truth")
-strategy_colors = Dict(strategy => Makie.wong_colors()[mod1(i, length(Makie.wong_colors()))]
+strategy_palette = cgrad(:tab10, length(strategy_order); categorical=true)
+strategy_colors = Dict(strategy => strategy_palette[i]
     for (i, strategy) in enumerate(strategy_order))
 metrics = [(:rmse, "Global wind RMSE"),
+           (:gt_deficit, "Deficit against each run's own λ target"),
            (:reference_deficit, "Deficit against fixed λ=0.25 target"),
            (:in_target, "Measurements within ±1 of rated (%)")]
 for environment in environments
@@ -93,9 +95,10 @@ for environment in environments
     isempty(environment_rows) && continue
     present_strategies = filter(s -> any(r -> r.strategy == s, environment_rows), strategy_order)
     environment_label = replace(environment, '_' => ' ')
-    fig = Figure(size=(1650, 650))
+    fig = Figure(size=(1500, 1050))
     for (column_index, (metric, label)) in enumerate(metrics)
-        ax = Axis(fig[1, column_index];
+        plot_row, plot_column = fldmod1(column_index, 2)
+        ax = Axis(fig[plot_row, plot_column];
             title=label,
             xlabel="Target-clarity decay rate λ_cd", ylabel=label)
         for strategy in present_strategies
@@ -109,8 +112,8 @@ for environment in environments
         end
         vlines!(ax, [0.25]; color=:gray45, linestyle=:dot, linewidth=1.5)
     end
-    Label(fig[0, 1:3], "$environment_label: target-clarity decay sweep", fontsize=20)
-    Legend(fig[2, 1:3], [LineElement(color=strategy_colors[s], linewidth=3)
+    Label(fig[0, 1:2], "$environment_label: target-clarity decay sweep", fontsize=20)
+    Legend(fig[3, 1:2], [LineElement(color=strategy_colors[s], linewidth=3)
         for s in present_strategies], [strategy_labels[s] for s in present_strategies];
         orientation=:horizontal, nbanks=2, framevisible=false, tellwidth=false)
     save(joinpath(outdir, "$(environment)_lambda_cd_sweep.pdf"), fig)

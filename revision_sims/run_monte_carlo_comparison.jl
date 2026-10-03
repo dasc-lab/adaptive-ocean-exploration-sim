@@ -22,6 +22,8 @@ function parse_args(args)
         "lt"         => "45.0",
         "strategies" => "transect,bb_ipp_nonadaptive,bb_ipp_adaptive,bb_ipp_ground_truth,ergo_nonadaptive,ergo_adaptive,ergo_ground_truth",
         "outdir"     => "results",
+        "save_trials" => "true",
+        "skip_plots" => "false",
         "srcdir"     => joinpath(@__DIR__, "../", "src"),
     )
     i = 1
@@ -54,6 +56,9 @@ isapprox(duration_minutes * 60 / 2.5, round(duration_minutes * 60 / 2.5); atol=1
     error("duration must be a multiple of 2.5 seconds")
 seeds = base_seed:(base_seed + num_mc - 1)
 SCRIPT_SRC_DIR = abspath(opts["srcdir"])
+parse_bool(name) = lowercase(strip(opts[name])) in ("true", "1", "yes")
+save_trials = parse_bool("save_trials")
+skip_plots = parse_bool("skip_plots")
 
 if nprocs() == 1
     total_tasks = length(seeds) * length(strategies) * length(w_rated_cmd) * length(ls_cmd) * length(lt_cmd)
@@ -62,6 +67,7 @@ end
 
 @everywhere SRC_DIR = $SCRIPT_SRC_DIR
 @everywhere const MONTE_CARLO_VERSION = "matched-measurement-noise-v1"
+@everywhere const MC_SAVE_TRIALS = $save_trials
 
 # =============================================================================
 # Setup Modules & Environment Code Across ALL Workers
@@ -749,7 +755,7 @@ end
     filename = @sprintf("trial_seed%d_%s_w%.2f_ls%.2f_lt%.2f.jld2", seed, strategy_name, w_rated_val, ls_val, lt_val)
     outpath = joinpath(outdir, filename)
 
-    if isfile(outpath)
+    if MC_SAVE_TRIALS && isfile(outpath)
         data = load(outpath)
         (get(data, "filter_timing_version", nothing) == SimulatorST.FILTER_TIMING_VERSION &&
          get(data, "target_metrics_version", nothing) == "live-estimated-target-v1" &&
@@ -783,7 +789,8 @@ end
         rmse_global, clarity_deficit, gt_clarity_deficit, est_clarity_rmse, gt_clarity_rmse, target_clarity_rmse = compute_run_metrics(res, env)
         meas = vec(res.measurements)
 
-        jldsave(outpath;
+        if MC_SAVE_TRIALS
+            jldsave(outpath;
             measurements = meas,
             rmse_global = rmse_global,
             clarity_deficit = clarity_deficit,
@@ -809,8 +816,9 @@ end
             xs = res.xs,
             us = res.us,
             seed = seed,
-            strategy = string(strategy_name)
-        )
+                strategy = string(strategy_name)
+            )
+        end
     end
 
     return (seed, strategy_name, meas, rmse_global, clarity_deficit, gt_clarity_deficit, est_clarity_rmse, gt_clarity_rmse, target_clarity_rmse, solve_time, w_rated_val, ls_val, lt_val)
@@ -1042,6 +1050,7 @@ function main()
     println("Spatial (Ls):     $(ls_cmd)")
     println("Temporal (Lt):    $(lt_cmd)")
     println("Strategies:       $(strategies)")
+    println("Save trials:      $(save_trials)")
     println("Active Workers:   $(workers())")
     println("="^80)
 
@@ -1053,6 +1062,23 @@ function main()
              for lt in lt_cmd]
              
     results = pmap(run_task, tasks)
+
+    # Retain compact per-seed statistics even when full trial histories are not
+    # saved. These rows are sufficient to recompute tables, uncertainty, and
+    # paper plots without multi-gigabyte JLD2 output.
+    trial_metrics_path = joinpath(data_dir, "trial_metrics.csv")
+    open(trial_metrics_path, "w") do f
+        println(f, "Seed,W_Rated,Ls,Lt,Strategy,RMSE_Mean,Est_Clarity_RMSE_Mean,GT_Clarity_RMSE_Mean,Target_Clarity_RMSE_Mean,Est_Deficit_Mean,GT_Deficit_Mean,GT_Deficit_Final,Solve_Time,Error_Mean,Error_Std,Proportion_In_Target")
+        for (seed, strat, meas, rmse_g, deficit, gt_deficit, e_c_rmse, gt_c_rmse,
+                t_c_rmse, stime, w_val, ls_val, lt_val) in results
+            errs = meas .- w_val
+            in_range = count(abs.(errs) .<= 1.0) / max(1, length(errs))
+            @printf(f, "%d,%.6f,%.6f,%.6f,%s,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.6f,%.9f,%.9f,%.9f\n",
+                seed, w_val, ls_val, lt_val, string(strat), mean(rmse_g),
+                mean(e_c_rmse), mean(gt_c_rmse), mean(t_c_rmse), mean(deficit),
+                mean(gt_deficit), last(gt_deficit), stime, mean(errs), std(errs), in_range)
+        end
+    end
 
     # Dict Initialization Inside main()
     measurements_dict       = Dict{Tuple{Symbol, Float64, Float64, Float64}, Vector{Float64}}()
@@ -1188,14 +1214,17 @@ function main()
     end
 
     figures_dir = joinpath(data_dir, "figures")
-    plot_summary_outputs(plot_rows, strategies, w_rated_cmd, ls_cmd, lt_cmd, figures_dir)
-    
+    if !skip_plots
+        plot_summary_outputs(plot_rows, strategies, w_rated_cmd, ls_cmd, lt_cmd, figures_dir)
+    end
+
     wall_runtime_sec = time() - T_START_WALL
     println("\nSweep Complete! Total Wall Runtime: ", round(wall_runtime_sec, digits=2), " seconds")
+    println("Per-seed metrics CSV saved to: ", trial_metrics_path)
     println("Summary metrics CSV saved to: ", csv_report_path)
     println("Summary ASCII Table saved to: ", txt_report_path)
     println("Plot statistics CSV saved to: ", plot_data_path)
-    println("Comparison figures saved to: ", figures_dir)
+    skip_plots || println("Comparison figures saved to: ", figures_dir)
     println("="^80)
 end
 

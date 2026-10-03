@@ -110,7 +110,10 @@ for environment in environments
             scatter!(ax, [r.lambda_cd for r in series], [getproperty(r, metric) for r in series];
                 color=strategy_colors[strategy], markersize=9)
         end
-        vlines!(ax, [0.25]; color=:gray45, linestyle=:dot, linewidth=1.5)
+        plotted_lambdas = [r.lambda_cd for r in environment_rows]
+        if minimum(plotted_lambdas) <= 0.25 <= maximum(plotted_lambdas)
+            vlines!(ax, [0.25]; color=:gray45, linestyle=:dot, linewidth=1.5)
+        end
     end
     Label(fig[0, 1:2], "$environment_label: target-clarity decay sweep", fontsize=20)
     Legend(fig[3, 1:2], [LineElement(color=strategy_colors[s], linewidth=3)

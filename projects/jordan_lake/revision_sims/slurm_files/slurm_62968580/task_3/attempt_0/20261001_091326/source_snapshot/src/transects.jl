@@ -1,0 +1,159 @@
+module Transects
+
+using LinearAlgebra, StaticArrays
+import LazySets
+import TravelingSalesmanHeuristics
+include("jordan_lake_domain.jl")
+
+function create_points(grid_points)
+    bounded_pts = Vector{Vector{Float64}}()
+    for point in grid_points
+        if point ∈ JordanLakeDomain.convex_polygon.polygon
+            push!(bounded_pts, point)
+        end
+    end
+
+    new_jordan_pts = solve_basic(bounded_pts)
+    return new_jordan_pts
+end
+
+"""Build a transect and add waypoints along a vertical boundary.
+
+The boundary points remove dependence on the phase of the regular waypoint grid;
+`inset` keeps them strictly inside the motion polygon.
+"""
+function create_points_with_vertical_boundary(grid_points, polygon, boundary_ys;
+        boundary_x=maximum(polygon.vertices[1, :]), inset=1e-6)
+    inset >= 0 || throw(ArgumentError("inset must be nonnegative"))
+    x = boundary_x - inset
+    candidates = vcat(collect(grid_points), [[x, y] for y in boundary_ys])
+    bounded = unique([p for p in candidates if p in polygon.polygon])
+    isempty(bounded) && throw(ArgumentError("no transect points inside polygon"))
+    return solve_basic(bounded)
+end
+
+
+# pts is a vector of waypoints to go to
+# returns the order of visiting these points
+# bias > 0 means the cost of going along x is slightly less than the cost of going along y
+function solve_tsp(pts::Vector{P}; bias=0.05) where {F, P<: AbstractVector{F}}
+    
+    N = length(pts)
+    D = zeros(F, N, N)
+    
+    for i=1:N, j=(i+1):N
+        D[i, j] = norm(pts[i] - pts[j]) + bias * abs(pts[i][2] - pts[j][2])
+        D[j, i] = D[i, j]
+    end
+    
+    inds = TravelingSalesmanHeuristics.solve_tsp(D)[1]
+    
+    # return the sorted points
+    return pts[inds]
+    
+end
+
+struct PointSet{F}
+    xs::Vector{F}
+    y::F
+end
+
+function solve_basic(pts::Vector{P}) where {F, P<:AbstractVector{F}}
+    
+    N = length(pts)
+    
+    # group by unique ys
+    unique_ys = last.(pts) |> unique |> sort
+    pt_sets = [PointSet(F[], y) for y in unique_ys]
+    
+    for pt in pts
+        ind = searchsortedfirst(unique_ys, pt[2])
+        push!(pt_sets[ind].xs, pt[1])
+    end
+    
+    # sort the pointsets, alternating the direction of sorting
+    for (i, s) in enumerate(pt_sets)
+        if mod(i, 2) == 0
+            sort!(s.xs)
+        else
+            sort!(s.xs, rev=true)
+        end
+    end
+    
+    # now join all the points
+    path = P[]
+    for s in pt_sets
+        for x in s.xs
+            push!(path, [x, s.y])
+        end
+    end
+    
+    return path
+    
+end
+
+"""Clip a convex polygon strictly west of split_x for the oracle transect check."""
+function west_half_polygon(polygon, split_x; margin=1e-6)
+    cut = split_x - margin
+    vertices = [polygon.vertices[:, i] for i in axes(polygon.vertices, 2)]
+    clipped = Vector{Float64}[]
+    for i in eachindex(vertices)
+        a, b = vertices[i], vertices[mod1(i+1, length(vertices))]
+        ina, inb = a[1] <= cut, b[1] <= cut
+        ina && push!(clipped, a)
+        if ina != inb
+            fraction = (cut - a[1]) / (b[1] - a[1])
+            push!(clipped, [cut, a[2] + fraction * (b[2] - a[2])])
+        end
+    end
+    length(clipped) >= 3 || throw(ArgumentError("west-half polygon is empty"))
+    return JordanLakeDomain.ConvexBoundAvoidance.ConvexPolygon(
+        LazySets.VPolygon(clipped), hcat(clipped...))
+end
+
+"""Area of a polygon represented by its 2×N vertex matrix."""
+function polygon_area(vertices::AbstractMatrix)
+    size(vertices, 1) == 2 || throw(DimensionMismatch("polygon vertices must be 2×N"))
+    size(vertices, 2) >= 3 || throw(ArgumentError("polygon needs at least three vertices"))
+    signed_twice_area = sum(
+        vertices[1, i] * vertices[2, mod1(i + 1, size(vertices, 2))] -
+        vertices[1, mod1(i + 1, size(vertices, 2))] * vertices[2, i]
+        for i in axes(vertices, 2))
+    return abs(signed_twice_area) / 2
+end
+
+"""Find the vertical cut that divides a convex polygon into equal-area halves."""
+function equal_area_split_x(polygon; atol=1e-12, max_iterations=100)
+    atol > 0 || throw(ArgumentError("atol must be positive"))
+    max_iterations > 0 || throw(ArgumentError("max_iterations must be positive"))
+    target_area = polygon_area(polygon.vertices) / 2
+    lo, hi = extrema(polygon.vertices[1, :])
+    for _ in 1:max_iterations
+        mid = (lo + hi) / 2
+        west_area = polygon_area(west_half_polygon(polygon, mid; margin=0).vertices)
+        abs(west_area - target_area) <= atol && return mid
+        west_area < target_area ? (lo = mid) : (hi = mid)
+    end
+    return (lo + hi) / 2
+end
+
+"""Advance the waypoint before steering and never step past the next waypoint.
+Coordinates are km, speed is m/s, and dt is minutes, matching SimulatorST.
+Straight segments between interior waypoints stay inside a convex polygon.
+"""
+function follow_waypoints(xs, points, index, speed, dt; tolerance=0.01)
+    isempty(points) && throw(ArgumentError("empty transect"))
+    length(xs) == 1 || throw(ArgumentError("transect requires one vehicle"))
+    dt > 0 || throw(ArgumentError("nonpositive timestep"))
+    x = first(xs)
+    for _ in eachindex(points)
+        norm(x - points[index]) > tolerance && break
+        index = mod1(index + 1, length(points))
+    end
+    delta = SVector{2,Float64}(points[index] - x)
+    distance = norm(delta)
+    u = distance == 0 ? zero(delta) : delta / distance * min(speed, distance / (dt * 60 / 1000))
+    return [u], index
+end
+
+end

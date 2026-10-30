@@ -3,7 +3,7 @@ using Test, LinearAlgebra, Statistics, Random, StaticArrays, SpatiotemporalGPs
 original_args = copy(ARGS)
 empty!(ARGS)
 append!(ARGS, ["--nworkers", "0"])
-include(joinpath(@__DIR__, "..", "revision_sims", "run_half_domain_sim.jl"))
+include(joinpath(@__DIR__, "..", "projects", "jordan_lake", "revision_sims", "run_half_domain_sim.jl"))
 empty!(ARGS); append!(ARGS, original_args)
 
 function small_case(; n=7, moving=false)

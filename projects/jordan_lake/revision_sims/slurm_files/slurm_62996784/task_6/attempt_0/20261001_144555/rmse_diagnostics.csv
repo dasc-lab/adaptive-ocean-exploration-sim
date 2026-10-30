@@ -1,0 +1,2 @@
+strategy,wind_updates,clarity_snapshots,wind_rmse_mean,estimated_clarity_rmse_mean,gt_clarity_rmse_mean,target_rmse_mean
+ergo_adaptive,4321,4321,2.2193298617139408,0.3756922384726468,0.40905255743917485,0.1976382259562571

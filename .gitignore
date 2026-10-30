@@ -38,3 +38,11 @@ Manifest.toml
 # Data Files
 *.jld2
 # *.csv
+
+# New local datasets and generated outputs (small fixtures live in test/fixtures).
+/data/*
+!/data/README.md
+/outputs/*
+!/outputs/README.md
+*.swp
+*.swo

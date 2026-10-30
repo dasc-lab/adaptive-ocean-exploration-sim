@@ -1,7 +1,7 @@
 name = "Simulator"
 uuid = "7157184b-89f0-4354-a572-eb58594454fd"
 authors = ["kmgovind <kavin.gmk@gmail.com>"]
-version = "0.1.0"
+version = "0.2.0"
 
 [deps]
 AbstractGPs = "99985d1d-32ba-4be9-9821-2ec096f28918"
